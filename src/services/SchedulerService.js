@@ -1,5 +1,6 @@
 // src/services/SchedulerService.js
 const cron = require('node-cron');
+const { Op } = require('sequelize');
 const logger = require('../utils/logger');
 const invoiceService = require('./InvoiceService');
 const mediaService = require('./MediaService');
@@ -131,7 +132,7 @@ class SchedulerService {
       const now = new Date();
       let overdueInvoices;
       
-      if (process.env.DB_TYPE === 'mysql') {
+      if (process.env.DB_TYPE !== 'mongodb') {
         overdueInvoices = await Invoice.findAll({
           where: {
             status: 'pending',
@@ -150,7 +151,7 @@ class SchedulerService {
         if (invoice.exhibitorId) {
           let exhibitor;
           
-          if (process.env.DB_TYPE === 'mysql') {
+          if (process.env.DB_TYPE !== 'mongodb') {
             exhibitor = await User.findByPk(invoice.exhibitorId);
           } else {
             exhibitor = await User.findById(invoice.exhibitorId);
@@ -235,16 +236,18 @@ class SchedulerService {
 
   async cleanupOldNotifications() {
     try {
-      const Notification = require('../models/mongodb/Notification');
+      const Notification = require('../models').getModel('Notification');
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - 30); // 30 days ago
       
-      const result = await Notification.deleteMany({
-        read: true,
-        createdAt: { $lt: cutoffDate }
+      const deletedCount = await Notification.destroy({
+        where: {
+          read: true,
+          createdAt: { [Op.lt]: cutoffDate }
+        }
       });
       
-      logger.info(`Cleaned up ${result.deletedCount} old notifications`);
+      logger.info(`Cleaned up ${deletedCount} old notifications`);
     } catch (error) {
       logger.error(`Failed to cleanup old notifications: ${error.message}`);
     }
@@ -338,7 +341,7 @@ class SchedulerService {
       
       let pendingPayments;
       
-      if (process.env.DB_TYPE === 'mysql') {
+      if (process.env.DB_TYPE !== 'mongodb') {
         pendingPayments = await Payment.findAll({
           where: {
             status: 'pending',

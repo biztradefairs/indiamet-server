@@ -6,7 +6,7 @@ const getInvoiceModel = () => {
   
   if (!sequelize) {
     throw new Error(
-      'MySQL connection not initialized. Call database.connect() before loading models.'
+      'Postgres connection not initialized. Call database.connect() before loading models.'
     );
   }
 

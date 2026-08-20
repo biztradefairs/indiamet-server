@@ -83,7 +83,7 @@ class AppServer {
       console.log('='.repeat(60));
       console.log(`📁 Environment: ${this.env}`);
       console.log(`🔧 Node Version: ${process.version}`);
-      console.log(`🗄️ Database Type: ${process.env.DB_TYPE || 'mysql'}`);
+      console.log(`🗄️ Database Type: ${process.env.DB_TYPE || 'postgres'}`);
       console.log(`🌐 Port: ${this.port}`);
       console.log('='.repeat(60));
 
@@ -120,7 +120,7 @@ class AppServer {
       console.log('✅ Database connected successfully');
 
       // Test database connection
-      const sequelize = database.getConnection('mysql');
+      const sequelize = database.getConnection('postgres');
       if (sequelize) {
         await sequelize.authenticate();
         console.log('✅ Database authentication successful');
@@ -145,13 +145,13 @@ class AppServer {
       const modelFactory = require('./models');
 
       // Initialize models
-      const models = modelFactory.init();
+      const models = await modelFactory.init();
       console.log(`✅ Models initialized: ${Object.keys(models).length} models loaded`);
 
       // Sync models with database (development only)
       if (this.env === 'development') {
         console.log('🔄 Syncing database models...');
-        const sequelize = database.getConnection('mysql');
+        const sequelize = database.getConnection('postgres');
         if (sequelize) {
           try {
             // Use force: false to preserve existing data
@@ -359,15 +359,22 @@ const uploadDirs = [
         const count = await Manual.count();
 
         // Try to get table info
+        const tableName = Manual.getTableName();
         const tableInfo = await Manual.sequelize.query(
-          "SELECT COUNT(*) as count FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'Manuals'",
-          { type: Manual.sequelize.QueryTypes.SELECT }
+          `SELECT COUNT(*)::int as count
+           FROM information_schema.tables
+           WHERE table_schema = current_schema()
+             AND table_name IN (:tableName, lower(:tableName))`,
+          {
+            replacements: { tableName },
+            type: Manual.sequelize.QueryTypes.SELECT
+          }
         );
 
         res.json({
           success: true,
           message: 'Manual model is working',
-          tableExists: tableInfo[0].count > 0,
+          tableExists: Number(tableInfo[0]?.count || 0) > 0,
           recordCount: count,
           loadedModels: Object.keys(models.getAllModels())
         });
@@ -992,7 +999,7 @@ setupRoutes() {
         console.log(`🌐 Environment: ${this.env}`);
         console.log(`📊 Health Check: http://localhost:${this.port}/health`);
         console.log(`📚 API Docs: http://localhost:${this.port}/api/docs`);
-        console.log(`🗄️ Database: ${process.env.DB_TYPE || 'mysql'}`);
+        console.log(`🗄️ Database: ${process.env.DB_TYPE || 'postgres'}`);
         console.log(`📁 Static Files: http://localhost:${this.port}/uploads/`);
 
         // Check email configuration
@@ -1040,20 +1047,20 @@ async checkDefaultAdmin() {
     const User = modelFactory.getModel('User');
     const bcrypt = require('bcryptjs');
 
-    let admin = await User.findOne({
-      where: { email: 'admin@example.com' }
-    });
+    const adminEmail = (process.env.ADMIN_EMAIL || 'admin@indiamet.com').toLowerCase();
+    const plainPassword = process.env.ADMIN_PASSWORD || 'admin123';
 
-    const plainPassword = 'admin123';
-    const hashedPassword = await bcrypt.hash(plainPassword, 10);
+    let admin = await User.findOne({
+      where: { email: adminEmail }
+    });
 
     if (!admin) {
       console.log('👤 Creating default admin user...');
 
       await User.create({
         name: 'Administrator',
-        email: 'admin@example.com',
-        password: hashedPassword,  // Use hashed password
+        email: adminEmail,
+        password: plainPassword,
         role: 'admin',
         status: 'active'
       });
@@ -1061,14 +1068,13 @@ async checkDefaultAdmin() {
       console.log('✅ Default admin user created');
     } else {
       console.log('🔄 Admin user already exists, checking if password update is needed...');
-      
-      // Check if the existing password needs to be updated
+
       const isPasswordCorrect = await bcrypt.compare(plainPassword, admin.password);
-      
+
       if (!isPasswordCorrect) {
         console.log('🔄 Updating admin password...');
         await admin.update({
-          password: hashedPassword  // Update with hashed password
+          password: plainPassword
         });
         console.log('✅ Admin password updated');
       } else {
@@ -1076,8 +1082,8 @@ async checkDefaultAdmin() {
       }
     }
 
-    console.log('📧 Email: admin@example.com');
-    console.log('🔑 Password: admin123 (hashed stored in database)');
+    console.log(`📧 Email: ${adminEmail}`);
+    console.log('🔑 Password: set from ADMIN_PASSWORD');
     console.log('✅ Admin user check completed');
 
   } catch (error) {

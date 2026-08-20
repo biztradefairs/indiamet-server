@@ -46,7 +46,7 @@ class KafkaConsumer {
     await this.subscribe('audit-logs', async (log) => {
       console.log('Audit Log Received:', log);
       // Store audit log in database
-      const AuditLog = require('../models/mongodb/AuditLog');
+      const AuditLog = require('../models').getModel('AuditLog');
       await AuditLog.create(log);
     });
 

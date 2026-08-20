@@ -2,7 +2,7 @@ const { Op, Sequelize } = require('sequelize');
 
 class PaymentService {
   constructor() {
-    this.dbType = process.env.DB_TYPE || 'mysql';
+    this.dbType = process.env.DB_TYPE || 'postgres';
     this.initialized = false;
     this._paymentModel = null;
     this._invoiceModel = null;

@@ -9,7 +9,7 @@ router.get('/', async (req, res) => {
     const Exhibitor = modelFactory.getModel('Exhibitor');
     
     let exhibitor;
-    if (process.env.DB_TYPE === 'mysql') {
+    if (process.env.DB_TYPE !== 'mongodb') {
       exhibitor = await Exhibitor.findByPk(req.user.id);
     } else {
       exhibitor = await Exhibitor.findById(req.user.id);
@@ -38,7 +38,7 @@ router.get('/', async (req, res) => {
     let boothInFloorPlan = null;
     
     if (FloorPlan && exhibitor.boothNumber) {
-      if (process.env.DB_TYPE === 'mysql') {
+      if (process.env.DB_TYPE !== 'mongodb') {
         floorPlan = await FloorPlan.findOne({
           where: { isActive: true }
         });
@@ -106,7 +106,7 @@ router.put('/', async (req, res) => {
     const Exhibitor = modelFactory.getModel('Exhibitor');
     
     let exhibitor;
-    if (process.env.DB_TYPE === 'mysql') {
+    if (process.env.DB_TYPE !== 'mongodb') {
       exhibitor = await Exhibitor.findByPk(req.user.id);
     } else {
       exhibitor = await Exhibitor.findById(req.user.id);
@@ -139,7 +139,7 @@ router.put('/', async (req, res) => {
     };
     
     // Update exhibitor
-    if (process.env.DB_TYPE === 'mysql') {
+    if (process.env.DB_TYPE !== 'mongodb') {
       await Exhibitor.update(
         { 
           stallDetails: JSON.stringify(updatedStallDetails),

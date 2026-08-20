@@ -197,7 +197,7 @@ router.put('/profile', async (req, res) => {
     const Exhibitor = modelFactory.getModel('Exhibitor');
     
     let exhibitor;
-    if (process.env.DB_TYPE === 'mysql') {
+    if (process.env.DB_TYPE !== 'mongodb') {
       exhibitor = await Exhibitor.findByPk(req.user.id);
     } else {
       exhibitor = await Exhibitor.findById(req.user.id);
@@ -377,7 +377,7 @@ router.get('/layout', async (req, res) => {
 
     // Get exhibitor
     let exhibitor;
-    if (process.env.DB_TYPE === 'mysql') {
+    if (process.env.DB_TYPE !== 'mongodb') {
       exhibitor = await Exhibitor.findByPk(req.user.id);
     } else {
       exhibitor = await Exhibitor.findById(req.user.id);
@@ -395,7 +395,7 @@ router.get('/layout', async (req, res) => {
     try {
       const FloorPlan = modelFactory.getModel('FloorPlan');
       if (FloorPlan) {
-        if (process.env.DB_TYPE === 'mysql') {
+        if (process.env.DB_TYPE !== 'mongodb') {
           floorPlan = await FloorPlan.findOne({
             where: { isActive: true }
           });
@@ -437,7 +437,7 @@ router.get('/layout', async (req, res) => {
     try {
       const Requirement = modelFactory.getModel('Requirement');
       if (Requirement) {
-        if (process.env.DB_TYPE === 'mysql') {
+        if (process.env.DB_TYPE !== 'mongodb') {
           requirements = await Requirement.findAll({
             where: { exhibitorId: exhibitor.id },
             order: [['createdAt', 'DESC']],
@@ -465,7 +465,7 @@ router.get('/layout', async (req, res) => {
     try {
       const Event = modelFactory.getModel('Event');
       if (Event) {
-        if (process.env.DB_TYPE === 'mysql') {
+        if (process.env.DB_TYPE !== 'mongodb') {
           event = await Event.findOne({
             where: { isActive: true }
           });
@@ -655,7 +655,7 @@ router.get('/requirements', async (req, res) => {
     let requirements = [];
     
     if (Requirement) {
-      if (process.env.DB_TYPE === 'mysql') {
+      if (process.env.DB_TYPE !== 'mongodb') {
         requirements = await Requirement.findAll({
           where: { exhibitorId: req.user.id },
           order: [['createdAt', 'DESC']]

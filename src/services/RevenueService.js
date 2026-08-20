@@ -61,7 +61,7 @@ class RevenueService {
           startDate = new Date(0);
       }
       
-      if (process.env.DB_TYPE === 'mysql') {
+      if (process.env.DB_TYPE !== 'mongodb') {
         // Get total revenue from completed payments
         const totalRevenue = await this.Payment.sum('amount', {
           where: {
@@ -103,7 +103,7 @@ class RevenueService {
         // Get monthly trend
         const monthlyTrend = await this.Payment.findAll({
           attributes: [
-            [Sequelize.fn('DATE_FORMAT', Sequelize.col('date'), '%Y-%m'), 'month'],
+            [Sequelize.fn('to_char', Sequelize.col('date'), 'YYYY-MM'), 'month'],
             [Sequelize.fn('COUNT', Sequelize.col('id')), 'count'],
             [Sequelize.fn('SUM', Sequelize.col('amount')), 'total']
           ],
@@ -111,8 +111,8 @@ class RevenueService {
             status: 'completed',
             date: { [Op.between]: [startDate, endDate] }
           },
-          group: [Sequelize.fn('DATE_FORMAT', Sequelize.col('date'), '%Y-%m')],
-          order: [[Sequelize.fn('DATE_FORMAT', Sequelize.col('date'), '%Y-%m'), 'ASC']]
+          group: [Sequelize.fn('to_char', Sequelize.col('date'), 'YYYY-MM')],
+          order: [[Sequelize.fn('to_char', Sequelize.col('date'), 'YYYY-MM'), 'ASC']]
         });
         
         return {
@@ -193,7 +193,7 @@ class RevenueService {
 
   async getRevenueBySector() {
     try {
-      if (process.env.DB_TYPE === 'mysql') {
+      if (process.env.DB_TYPE !== 'mongodb') {
         // Join payments with exhibitors to get revenue by sector
         const revenueBySector = await this.Exhibitor.findAll({
           attributes: [
@@ -267,18 +267,18 @@ class RevenueService {
       const startDate = new Date();
       startDate.setMonth(startDate.getMonth() - periods);
       
-      if (process.env.DB_TYPE === 'mysql') {
+      if (process.env.DB_TYPE !== 'mongodb') {
         const monthlyRevenue = await this.Payment.findAll({
           attributes: [
-            [Sequelize.fn('DATE_FORMAT', Sequelize.col('date'), '%Y-%m'), 'month'],
+            [Sequelize.fn('to_char', Sequelize.col('date'), 'YYYY-MM'), 'month'],
             [Sequelize.fn('SUM', Sequelize.col('amount')), 'revenue']
           ],
           where: {
             status: 'completed',
             date: { [Op.between]: [startDate, endDate] }
           },
-          group: [Sequelize.fn('DATE_FORMAT', Sequelize.col('date'), '%Y-%m')],
-          order: [[Sequelize.fn('DATE_FORMAT', Sequelize.col('date'), '%Y-%m'), 'ASC']]
+          group: [Sequelize.fn('to_char', Sequelize.col('date'), 'YYYY-MM')],
+          order: [[Sequelize.fn('to_char', Sequelize.col('date'), 'YYYY-MM'), 'ASC']]
         });
         
         // Calculate growth percentage
@@ -352,7 +352,7 @@ class RevenueService {
 
   async getTopRevenueSources(limit = 5) {
     try {
-      if (process.env.DB_TYPE === 'mysql') {
+      if (process.env.DB_TYPE !== 'mongodb') {
         const topSources = await this.Payment.findAll({
           attributes: [
             'source',
@@ -409,7 +409,7 @@ class RevenueService {
       // Get pending invoices count
       let pendingInvoices = 0;
       try {
-        if (process.env.DB_TYPE === 'mysql') {
+        if (process.env.DB_TYPE !== 'mongodb') {
           pendingInvoices = await this.Invoice.count({
             where: { status: 'pending' }
           });

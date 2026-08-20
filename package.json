@@ -1,15 +1,15 @@
 {
-  "name": "diemex-backend",
+  "name": "indiamet-server",
   "version": "1.0.0",
-  "description": "Backend for Exhibition Admin Dashboard with MySQL, MongoDB, and Kafka",
+  "description": "Backend for Exhibition Admin Dashboard with Neon Postgres",
   "keywords": [
     "exhibition",
     "admin",
     "dashboard",
     "nodejs",
     "express",
-    "mysql",
-    "mongodb",
+    "postgres",
+    "neon",
     "kafka",
     "redis"
   ],
@@ -76,6 +76,8 @@
     "nodemailer": "^7.0.12",
     "path": "^0.12.7",
     "pdfkit": "^0.17.2",
+    "pg": "^8.23.0",
+    "pg-hstore": "^2.3.4",
     "qrcode": "^1.5.4",
     "razorpay": "^2.9.6",
     "react-qr-reader": "^3.0.0-beta-1",

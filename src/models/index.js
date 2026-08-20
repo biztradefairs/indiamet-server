@@ -119,20 +119,21 @@ const modelFactories = {
     return factory(database.getConnection('mysql'));
   },
   Visitor: () => {
-  const factory = require('./mysql/Visitor');
-  return factory(database.getConnection('mysql'));
-},
-
-  // ================= MONGO MODELS =================
-
-  MongoUser: () => require('./mongodb/User'),
-  MongoAuditLog: () => require('./mongodb/AuditLog'),
-  MongoNotification: () => require('./mongodb/Notification'),
-  MongoFloorPlan: () => require('./mongodb/FloorPlan'),
-  MongoInvoice: () => require('./mongodb/Invoice'),
-  MongoPayment: () => require('./mongodb/Payment'),
-  MongoMedia: () => require('./mongodb/Media'),
-  MongoAlert: () => require('./mongodb/Alert')
+    const factory = require('./mysql/Visitor');
+    return factory(database.getConnection('mysql'));
+  },
+  Notification: () => {
+    const factory = require('./mysql/Notification');
+    return factory(database.getConnection('mysql'));
+  },
+  AuditLog: () => {
+    const factory = require('./mysql/AuditLog');
+    return factory(database.getConnection('mysql'));
+  },
+  Alert: () => {
+    const factory = require('./mysql/Alert');
+    return factory(database.getConnection('mysql'));
+  }
 };
 
 // ======================================================
@@ -142,27 +143,24 @@ const modelFactories = {
 async function init() {
   if (initialized) return models;
 
-  const dbType = process.env.DB_TYPE || 'mysql';
+  const dbType = process.env.DB_TYPE || 'postgres';
   console.log(`📦 Initializing models (DB_TYPE=${dbType})`);
 
-  // ================= MYSQL =================
-  if (dbType === 'mysql' || dbType === 'both') {
-    const sequelize = database.getConnection('mysql');
+  if (database.usesSequelize()) {
+    const sequelize = database.getConnection('postgres');
 
     if (!sequelize) {
-      throw new Error('❌ MySQL connection not available');
+      throw new Error('❌ Postgres connection not available');
     }
 
-    console.log('🔄 Loading MySQL models...');
+    console.log('🔄 Loading Postgres models...');
 
     for (const modelName of Object.keys(modelFactories)) {
-      if (!modelName.startsWith('Mongo')) {
-        try {
-          models[modelName] = modelFactories[modelName]();
-          console.log(`✅ Loaded model: ${modelName}`);
-        } catch (err) {
-          console.error(`❌ Failed loading model ${modelName}:`, err.message);
-        }
+      try {
+        models[modelName] = modelFactories[modelName]();
+        console.log(`✅ Loaded model: ${modelName}`);
+      } catch (err) {
+        console.error(`❌ Failed loading model ${modelName}:`, err.message);
       }
     }
 
@@ -191,22 +189,6 @@ async function init() {
       console.log('✅ Database synced successfully');
     } catch (syncError) {
       console.error('❌ Database sync failed:', syncError.message);
-    }
-  }
-
-  // ================= MONGODB =================
-  if (dbType === 'mongodb' || dbType === 'both') {
-    console.log('🔄 Loading MongoDB models...');
-
-    for (const modelName of Object.keys(modelFactories)) {
-      if (modelName.startsWith('Mongo')) {
-        try {
-          models[modelName] = modelFactories[modelName]();
-          console.log(`✅ Loaded Mongo model: ${modelName}`);
-        } catch (err) {
-          console.error(`❌ Failed Mongo model ${modelName}:`, err.message);
-        }
-      }
     }
   }
 

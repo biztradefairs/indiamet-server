@@ -22,7 +22,15 @@ module.exports = (sequelize) => {
   });
 
   User.beforeCreate(async (user) => {
-    user.password = await bcrypt.hash(user.password, 10);
+    if (user.password && !user.password.startsWith('$2')) {
+      user.password = await bcrypt.hash(user.password, 10);
+    }
+  });
+
+  User.beforeUpdate(async (user) => {
+    if (user.changed('password') && user.password && !user.password.startsWith('$2')) {
+      user.password = await bcrypt.hash(user.password, 10);
+    }
   });
 
   User.prototype.comparePassword = function (password) {

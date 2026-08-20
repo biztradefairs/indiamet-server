@@ -1,35 +1,5 @@
 
 services:
-  mysql:
-    image: mysql:8.0
-    container_name: exhibition-mysql
-    environment:
-      MYSQL_ROOT_PASSWORD: root123
-      MYSQL_DATABASE: exhibition_db
-      MYSQL_USER: exhibition_user
-      MYSQL_PASSWORD: exhibition_pass
-    ports:
-      - "3306:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
-    networks:
-      - exhibition-network
-
-  mongodb:
-    image: mongo:6.0
-    container_name: exhibition-mongodb
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: admin123
-      MONGO_INITDB_DATABASE: exhibition_db
-    ports:
-      - "27017:27017"
-    volumes:
-      - mongodb_data:/data/db
-    networks:
-      - exhibition-network
-
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: zookeeper
@@ -75,19 +45,13 @@ services:
     build: .
     container_name: exhibition-api
     depends_on:
-      - mysql
-      - mongodb
       - kafka
       - redis
+    env_file:
+      - .env
     environment:
       NODE_ENV: development
-      DB_TYPE: both
-      MYSQL_HOST: mysql
-      MYSQL_PORT: 3306
-      MYSQL_DATABASE: exhibition_db
-      MYSQL_USER: exhibition_user
-      MYSQL_PASSWORD: exhibition_pass
-      MONGO_URI: mongodb://admin:admin123@mongodb:27017/exhibition_db?authSource=admin
+      DB_TYPE: postgres
       ENABLE_KAFKA: "true"
       KAFKA_BROKERS: kafka:9092
       KAFKA_CLIENT_ID: admin-service
@@ -108,6 +72,4 @@ networks:
     driver: bridge
 
 volumes:
-  mysql_data:
-  mongodb_data:
   redis_data:

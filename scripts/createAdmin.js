@@ -1,61 +1,64 @@
-// scripts/createAdmin.js
 require('dotenv').config();
 const bcrypt = require('bcryptjs');
-const database = require('../config/database');
+const database = require('../src/config/database');
 
-async function createAdminUser() {
-  try {
-    console.log('🔧 Creating admin user...');
-    
-    await database.connect();
-    const sequelize = database.getConnection('mysql');
-    
-    // Check if users table exists
-    const [tables] = await sequelize.query("SHOW TABLES LIKE 'users'");
-    
-    if (tables.length === 0) {
-      console.log('❌ Users table does not exist. Run migrations first.');
-      process.exit(1);
-    }
-    
-    const hashedPassword = await bcrypt.hash('admin123', 10);
-    
-    // Check if admin already exists
-    const [existing] = await sequelize.query(
-      "SELECT * FROM users WHERE email = 'admin@example.com'"
-    );
-    
-    if (existing.length > 0) {
-      console.log('🔄 Admin user already exists, updating password...');
-      await sequelize.query(
-        "UPDATE users SET password = ?, updatedAt = NOW() WHERE email = 'admin@example.com'",
-        {
-          replacements: [hashedPassword]
-        }
-      );
-      console.log('✅ Admin password updated');
-    } else {
-      console.log('👤 Creating new admin user...');
-      await sequelize.query(
-        `INSERT INTO users (name, email, password, role, status, createdAt, updatedAt) 
-         VALUES (?, ?, ?, ?, ?, NOW(), NOW())`,
-        {
-          replacements: ['Administrator', 'admin@example.com', hashedPassword, 'admin', 'active']
-        }
-      );
-      console.log('✅ Admin user created');
-    }
-    
-    console.log('\n📧 Email: admin@example.com');
-    console.log('🔑 Password: admin123');
-    
-    await database.disconnect();
-    process.exit(0);
-    
-  } catch (error) {
-    console.error('❌ Error:', error);
-    process.exit(1);
+async function resetAdminPassword() {
+  const email = (process.env.ADMIN_EMAIL || 'admin@indiamet.com').trim().toLowerCase();
+  const password = process.env.ADMIN_PASSWORD || 'admin123';
+
+  await database.connect();
+  const sequelize = database.getConnection();
+  const hash = await bcrypt.hash(password, 10);
+
+  const [tables] = await sequelize.query(
+    `SELECT tablename FROM pg_tables
+     WHERE schemaname = 'public' AND lower(tablename) IN ('users', 'user')`
+  );
+
+  if (!tables.length) {
+    throw new Error('Users table not found');
   }
+
+  const tableName = tables[0].tablename;
+  const quotedTable = `"${tableName}"`;
+
+  const [existing] = await sequelize.query(
+    `SELECT id, email FROM ${quotedTable} WHERE lower(email) = :email LIMIT 1`,
+    { replacements: { email } }
+  );
+
+  if (!existing.length) {
+    await sequelize.query(
+      `INSERT INTO ${quotedTable} (id, name, email, password, role, status, "createdAt", "updatedAt")
+       VALUES (gen_random_uuid(), :name, :email, :password, 'admin', 'active', NOW(), NOW())`,
+      {
+        replacements: {
+          name: 'Administrator',
+          email,
+          password: hash
+        }
+      }
+    );
+    console.log(`Created admin ${email}`);
+  } else {
+    await sequelize.query(
+      `UPDATE ${quotedTable}
+       SET password = :password, role = 'admin', status = 'active', "updatedAt" = NOW()
+       WHERE lower(email) = :email`,
+      { replacements: { password: hash, email } }
+    );
+    console.log(`Updated password for ${email}`);
+  }
+
+  const matches = await bcrypt.compare(password, hash);
+  console.log(`Password verify: ${matches ? 'OK' : 'FAILED'}`);
+  console.log(`Email: ${email}`);
+  console.log('Password: admin123');
+
+  await database.disconnect();
 }
 
-createAdminUser();
+resetAdminPassword().catch((error) => {
+  console.error(error.message);
+  process.exit(1);
+});
