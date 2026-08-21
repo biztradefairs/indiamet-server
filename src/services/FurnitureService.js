@@ -50,6 +50,9 @@ class FurnitureService {
         cost3Days: parseInt(data.cost3Days) || 0,
         category: data.category || 'Furniture',
         inStock: data.inStock === 'true' || data.inStock === true,
+        isActive: data.isActive === undefined || data.isActive === ''
+          ? true
+          : data.isActive === 'true' || data.isActive === true,
         imageUrl,
         cloudinaryPublicId
       });
@@ -143,6 +146,9 @@ class FurnitureService {
       if (updateData.cost3Days) updateData.cost3Days = parseInt(updateData.cost3Days);
       if (updateData.inStock !== undefined) {
         updateData.inStock = updateData.inStock === 'true' || updateData.inStock === true;
+      }
+      if (updateData.isActive !== undefined) {
+        updateData.isActive = updateData.isActive === 'true' || updateData.isActive === true;
       }
 
       await furniture.update(updateData);

@@ -1,33 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
 const rentalItemController = require('../controllers/RentalItemController');
 const { authenticate, authorize } = require('../middleware/auth');
-
-// ======================
-// Multer Configuration for image upload
-// ======================
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 5 * 1024 * 1024 // 5MB limit
-  },
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = [
-      'image/jpeg',
-      'image/jpg',
-      'image/png',
-      'image/gif',
-      'image/webp'
-    ];
-
-    if (allowedTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type. Only JPEG, PNG, GIF, and WebP images are allowed.'));
-    }
-  }
-});
+const { singleImage } = require('../middleware/imageUpload');
 
 // ======================================================
 // TEST ROUTE - To verify routes are working
@@ -66,14 +41,14 @@ router.post(
   '/',
   authenticate,
   authorize(['admin']),
-  upload.single('image'),
+  singleImage('image'),
   rentalItemController.createItem
 );
 router.post(
   '',
   authenticate,
   authorize(['admin']),
-  upload.single('image'),
+  singleImage('image'),
   rentalItemController.createItem
 );
 
@@ -82,7 +57,7 @@ router.put(
   '/:id',
   authenticate,
   authorize(['admin']),
-  upload.single('image'),
+  singleImage('image'),
   rentalItemController.updateItem
 );
 

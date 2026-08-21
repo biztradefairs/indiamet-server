@@ -225,6 +225,50 @@ class FurnitureController {
     }
   }
 
+  // Toggle / set active status
+  async toggleActiveStatus(req, res) {
+    try {
+      const { id } = req.params;
+      const { isActive } = req.body;
+
+      if (!id) {
+        return res.status(400).json({
+          success: false,
+          message: 'Furniture ID is required'
+        });
+      }
+
+      if (isActive === undefined) {
+        return res.status(400).json({
+          success: false,
+          message: 'Active status (isActive) is required'
+        });
+      }
+
+      const result = await furnitureService.updateFurniture(id, { isActive });
+
+      res.json({
+        success: true,
+        data: result.data,
+        message: `Item ${isActive ? 'activated' : 'deactivated'} successfully`
+      });
+    } catch (error) {
+      console.error('Error in toggleActiveStatus:', error);
+
+      if (error.message === 'Furniture not found') {
+        return res.status(404).json({
+          success: false,
+          message: error.message
+        });
+      }
+
+      res.status(500).json({
+        success: false,
+        message: error.message || 'Failed to update active status'
+      });
+    }
+  }
+
   // Update stock status
   async updateStockStatus(req, res) {
     try {

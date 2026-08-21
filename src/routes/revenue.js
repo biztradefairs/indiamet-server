@@ -10,6 +10,9 @@ router.use(authenticate);
 // Get revenue summary (admin only)
 router.get('/summary', authorize(['admin']), revenueController.getRevenueSummary);
 
+// Combined analytics payload for the admin revenue page
+router.get('/analytics', authorize(['admin']), revenueController.getAdminAnalytics);
+
 // Get revenue by sector
 router.get('/by-sector', authorize(['admin']), revenueController.getRevenueBySector);
 

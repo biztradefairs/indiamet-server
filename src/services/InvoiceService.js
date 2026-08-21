@@ -209,7 +209,7 @@ async generateInvoicePdf(invoiceId) {
   async getInvoicesByExhibitor(exhibitorId) {
     return await db.Invoice.findAll({
       where: { exhibitorId },
-      order: [['created_at', 'DESC']]
+      order: [['issueDate', 'DESC']]
     });
   }
   
@@ -364,11 +364,11 @@ async generateInvoicePdf(invoiceId) {
     
     const offset = (page - 1) * limit;
     
-    const { count, rows } = await db.Invoice.findAndCountAll({
+    const { count, rows } = await db.getModel('Invoice').findAndCountAll({
       where,
       limit,
       offset,
-      order: [['created_at', 'DESC']]
+      order: [['issueDate', 'DESC']]
     });
     
     return {

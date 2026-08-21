@@ -12,41 +12,49 @@ module.exports = (sequelize) => {
       allowNull: false
     },
     invoiceId: {
-      type: DataTypes.UUID
+      type: DataTypes.UUID,
+      allowNull: true
     },
     exhibitorId: {
-      type: DataTypes.UUID
+      type: DataTypes.UUID,
+      allowNull: true
     },
     userId: {
-      type: DataTypes.UUID
+      type: DataTypes.UUID,
+      allowNull: true
     },
     amount: {
       type: DataTypes.DECIMAL(10, 2),
       allowNull: false
     },
     status: {
-      type: DataTypes.ENUM('pending', 'completed', 'failed', 'refunded'),
+      type: DataTypes.STRING,
       defaultValue: 'pending'
     },
     method: {
-      type: DataTypes.ENUM('credit_card', 'bank_transfer', 'check', 'cash', 'online'),
-      allowNull: false
+      type: DataTypes.STRING,
+      allowNull: false,
+      defaultValue: 'online'
     },
     transactionId: {
-      type: DataTypes.STRING
+      type: DataTypes.STRING,
+      allowNull: true
     },
     date: {
       type: DataTypes.DATE,
       defaultValue: DataTypes.NOW
     },
     dueDate: {
-      type: DataTypes.DATE
+      type: DataTypes.DATE,
+      allowNull: true
     },
     processedBy: {
-      type: DataTypes.STRING
+      type: DataTypes.STRING,
+      allowNull: true
     },
     notes: {
-      type: DataTypes.TEXT
+      type: DataTypes.TEXT,
+      allowNull: true
     },
     metadata: {
       type: DataTypes.JSON,
@@ -57,13 +65,8 @@ module.exports = (sequelize) => {
       defaultValue: 'exhibition'
     }
   }, {
-    indexes: [
-      { fields: ['invoiceNumber'] },
-      { fields: ['status'] },
-      { fields: ['method'] },
-      { fields: ['date'] },
-      { fields: ['exhibitorId'] }
-    ]
+    tableName: 'payments',
+    timestamps: true
   });
 
   return Payment;

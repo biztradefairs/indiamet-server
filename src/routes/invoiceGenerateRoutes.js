@@ -91,26 +91,24 @@ router.post('/generate-from-requirements', authenticateAny, async (req, res) => 
     const invoiceId = require('crypto').randomUUID();
     const now = new Date();
     
-    // Check if invoices table has required columns
-    const [columns] = await sequelize.query(`SHOW COLUMNS FROM invoices`);
-    const columnNames = columns.map(c => c.Field);
+    const [columns] = await sequelize.query(`
+      SELECT column_name AS "Field"
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'invoices'
+    `);
+    const columnNames = columns.map(c => c.Field || c.column_name);
     
     console.log('Available invoice columns:', columnNames);
     
-    // Build insert query dynamically
     const insertFields = [
       'id',
-      'invoiceNumber',
+      '"invoiceNumber"',
       'company',
       'amount',
       'status',
-      'dueDate',
-      'issueDate',
-      'created_at',
-      'updated_at'
+      '"dueDate"',
+      '"issueDate"'
     ];
-    
-    // Default status is 'pending' (waiting for payment)
     const insertValues = [
       invoiceId,
       finalInvoiceNumber,
@@ -118,14 +116,11 @@ router.post('/generate-from-requirements', authenticateAny, async (req, res) => 
       totals?.total || 0,
       'pending',
       finalDueDate,
-      finalIssueDate,
-      now,
-      now
+      finalIssueDate
     ];
     
-    // Add exhibitorId if column exists
     if (columnNames.includes('exhibitorId')) {
-      insertFields.push('exhibitorId');
+      insertFields.push('"exhibitorId"');
       insertValues.push(exhibitorId);
     }
     
@@ -495,12 +490,17 @@ router.get('/by-requirements/:requirementsId', authenticateAny, async (req, res)
     const sequelize = require('../config/database').getConnection('mysql');
     
     const [invoices] = await sequelize.query(`
-      SELECT * FROM invoices 
-      WHERE JSON_EXTRACT(metadata, '$.requirementsId') = ?
-      ORDER BY created_at DESC
+      SELECT * FROM invoices
+      WHERE "exhibitorId" = :exhibitorId
+         OR items::text ILIKE :needle
+         OR notes ILIKE :needle
+      ORDER BY "issueDate" DESC NULLS LAST
       LIMIT 1
     `, {
-      replacements: [requirementsId]
+      replacements: {
+        exhibitorId: req.user?.id || null,
+        needle: `%${requirementsId}%`
+      }
     });
     
     if (!invoices || invoices.length === 0) {
@@ -535,54 +535,20 @@ router.get('/by-requirements/:requirementsId', authenticateAny, async (req, res)
 // Get my invoices (for exhibitors)
 router.get('/my-invoices', authenticateAny, async (req, res) => {
   try {
-    const sequelize = require('../config/database').getConnection('mysql');
+    const modelFactory = require('../models');
+    const Invoice = modelFactory.getModel('Invoice');
     const userId = req.user?.id;
-    const userEmail = req.user?.email;
-    
-    let invoices = [];
-    
-    if (userId) {
-      const [results] = await sequelize.query(`
-        SELECT * FROM invoices 
-        WHERE exhibitorId = ? 
-        ORDER BY created_at DESC
-      `, {
-        replacements: [userId]
-      });
-      invoices = results;
-    }
-    
-    // Also try to find by email in metadata
-    if (userEmail) {
-      const [emailResults] = await sequelize.query(`
-        SELECT * FROM invoices 
-        WHERE JSON_EXTRACT(metadata, '$.exhibitorInfo.email') = ?
-        ORDER BY created_at DESC
-      `, {
-        replacements: [userEmail]
-      });
-      
-      const existingIds = new Set(invoices.map(i => i.id));
-      for (const inv of emailResults) {
-        if (!existingIds.has(inv.id)) {
-          invoices.push(inv);
-        }
-      }
-    }
-    
-    const parsedInvoices = invoices.map(inv => {
-      if (inv.metadata && typeof inv.metadata === 'string') {
-        inv.metadata = JSON.parse(inv.metadata);
-      }
-      if (inv.items && typeof inv.items === 'string') {
-        inv.items = JSON.parse(inv.items);
-      }
-      return inv;
-    });
-    
+
+    const invoices = userId
+      ? await Invoice.findAll({
+          where: { exhibitorId: userId },
+          order: [['issueDate', 'DESC']]
+        })
+      : [];
+
     res.json({
       success: true,
-      data: parsedInvoices
+      data: invoices
     });
     
   } catch (error) {
@@ -962,6 +928,72 @@ router.get('/:id/details', authenticateAny, async (req, res) => {
     
   } catch (error) {
     console.error('Error fetching invoice with details:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get all invoices (admin) — registered before /:id so "admin" is not treated as an invoice id
+router.get('/admin/all', authenticate, authorize(['admin']), async (req, res) => {
+  try {
+    const sequelize = require('../config/database').getConnection('mysql');
+    const { status, search } = req.query;
+
+    const where = [];
+    const replacements = {};
+
+    if (status && status !== 'all') {
+      where.push('i.status = :status');
+      replacements.status = status;
+    }
+    if (search) {
+      where.push('(i."invoiceNumber" ILIKE :search OR i.company ILIKE :search OR e.company ILIKE :search OR e.name ILIKE :search)');
+      replacements.search = `%${search}%`;
+    }
+
+    const [invoices] = await sequelize.query(`
+      SELECT
+        i.id,
+        i."invoiceNumber",
+        i."exhibitorId",
+        COALESCE(i.company, e.company) AS company,
+        i.amount,
+        i.status,
+        i."dueDate",
+        i."issueDate",
+        i."paidDate",
+        i.items,
+        i.notes,
+        i.terms,
+        e.name AS exhibitor_name,
+        e.email AS exhibitor_email
+      FROM invoices i
+      LEFT JOIN exhibitors e ON e.id = i."exhibitorId"
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY i."issueDate" DESC NULLS LAST
+    `, { replacements });
+
+    const data = invoices.map((invoice) => {
+      const items = typeof invoice.items === 'string' ? JSON.parse(invoice.items) : invoice.items;
+      return {
+        ...invoice,
+        items,
+        company: invoice.company || '—',
+        metadata: {
+          exhibitorInfo: {
+            name: invoice.exhibitor_name,
+            companyName: invoice.company,
+            email: invoice.exhibitor_email
+          }
+        }
+      };
+    });
+
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('Error fetching all invoices:', error);
     res.status(500).json({
       success: false,
       error: error.message
@@ -1482,87 +1514,8 @@ router.post('/:id/send-email', authenticateAny, async (req, res) => {
   }
 });
 
-// =============================================
-// ADMIN ONLY ROUTES
-// =============================================
 
-// Get all invoices (admin)
-router.get('/admin/all', authenticate, authorize(['admin']), async (req, res) => {
-  try {
-    const { page = 1, limit = 10, search, status } = req.query;
-    
-    const sequelize = require('../config/database').getConnection('mysql');
-    
-    let whereClause = '';
-    const replacements = [];
-    
-    if (status && status !== 'all') {
-      whereClause = 'WHERE status = ?';
-      replacements.push(status);
-    }
-    
-    if (search) {
-      if (whereClause) {
-        whereClause += ' AND (invoiceNumber LIKE ? OR company LIKE ?)';
-      } else {
-        whereClause = 'WHERE (invoiceNumber LIKE ? OR company LIKE ?)';
-      }
-      replacements.push(`%${search}%`, `%${search}%`);
-    }
-    
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    
-    const [invoices] = await sequelize.query(`
-      SELECT * FROM invoices 
-      ${whereClause}
-      ORDER BY created_at DESC
-      LIMIT ? OFFSET ?
-    `, {
-      replacements: [...replacements, parseInt(limit), offset]
-    });
-    
-    const [totalResult] = await sequelize.query(`
-      SELECT COUNT(*) as total FROM invoices ${whereClause}
-    `, {
-      replacements
-    });
-    
-    const total = totalResult[0]?.total || 0;
-    
-    const parsedInvoices = invoices.map(inv => {
-      if (inv.metadata && typeof inv.metadata === 'string') {
-        inv.metadata = JSON.parse(inv.metadata);
-      }
-      if (inv.items && typeof inv.items === 'string') {
-        inv.items = JSON.parse(inv.items);
-      }
-      return inv;
-    });
-    
-    res.json({
-      success: true,
-      data: parsedInvoices,
-      pagination: {
-        total,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        totalPages: Math.ceil(total / parseInt(limit))
-      }
-    });
-    
-  } catch (error) {
-    console.error('Error fetching all invoices:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-
-// src/routes/invoiceGenerateRoutes.js - REPLACE the admin update endpoint
-
-// Update invoice status (admin) - FIXED with correct column names
+// Update invoice status (admin)
 router.put('/admin/:id', authenticate, authorize(['admin']), async (req, res) => {
   try {
     const { id } = req.params;
@@ -1597,8 +1550,12 @@ router.put('/admin/:id', authenticate, authorize(['admin']), async (req, res) =>
     }
     
     // First check column names in the database
-    const [columns] = await sequelize.query(`SHOW COLUMNS FROM invoices`);
-    const columnNames = columns.map(c => c.Field);
+    const [columns] = await sequelize.query(`
+      SELECT column_name AS "Field"
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'invoices'
+    `);
+    const columnNames = columns.map(c => c.Field || c.column_name);
     console.log('Available columns:', columnNames);
     
     // Check if invoice exists

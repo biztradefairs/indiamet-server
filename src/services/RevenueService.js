@@ -472,6 +472,188 @@ class RevenueService {
       throw new Error(`Failed to get revenue forecast: ${error.message}`);
     }
   }
+
+  async getAdminAnalytics(timeRange = 'year', year) {
+    const sequelize = require('../config/database').getConnection('mysql');
+    const now = new Date();
+    const selectedYear = Number(year) || now.getFullYear();
+
+    let startDate;
+    let endDate;
+    switch (timeRange) {
+      case 'month':
+        startDate = new Date(selectedYear, now.getMonth(), 1);
+        endDate = new Date(selectedYear, now.getMonth() + 1, 0, 23, 59, 59, 999);
+        break;
+      case 'quarter': {
+        const quarterStart = Math.floor(now.getMonth() / 3) * 3;
+        startDate = new Date(selectedYear, quarterStart, 1);
+        endDate = new Date(selectedYear, quarterStart + 3, 0, 23, 59, 59, 999);
+        break;
+      }
+      case 'all':
+        startDate = new Date(2000, 0, 1);
+        endDate = new Date(selectedYear + 20, 11, 31, 23, 59, 59, 999);
+        break;
+      case 'year':
+      default:
+        startDate = new Date(selectedYear, 0, 1);
+        endDate = new Date(selectedYear, 11, 31, 23, 59, 59, 999);
+    }
+
+    const inRange = (value) => {
+      if (!value) return false;
+      const date = new Date(value);
+      return !Number.isNaN(date.getTime()) && date >= startDate && date <= endDate;
+    };
+
+    let invoices = [];
+    let payments = [];
+    let exhibitorCount = 0;
+
+    try {
+      const [rows] = await sequelize.query(`
+        SELECT id, amount, status, "issueDate", "paidDate", "exhibitorId", company
+        FROM invoices
+      `);
+      invoices = rows;
+    } catch (error) {
+      console.warn('Revenue analytics invoices query failed:', error.message);
+    }
+
+    try {
+      const [rows] = await sequelize.query(`
+        SELECT id, amount, status, method, source, date, "exhibitorId"
+        FROM payments
+      `);
+      payments = rows;
+    } catch (error) {
+      console.warn('Revenue analytics payments query failed:', error.message);
+    }
+
+    try {
+      const [rows] = await sequelize.query(`SELECT COUNT(*)::int AS n FROM exhibitors`);
+      exhibitorCount = rows[0]?.n || 0;
+    } catch (error) {
+      console.warn('Revenue analytics exhibitors query failed:', error.message);
+    }
+
+    const completedPayments = payments.filter((payment) => {
+      const status = String(payment.status || '').toLowerCase();
+      return ['completed', 'paid', 'success'].includes(status) && inRange(payment.date);
+    });
+
+    const paidInvoices = invoices.filter((invoice) => {
+      const status = String(invoice.status || '').toLowerCase();
+      return status === 'paid' && inRange(invoice.paidDate || invoice.issueDate);
+    });
+
+    const revenueRows = completedPayments.length
+      ? completedPayments.map((payment) => ({
+          amount: Number(payment.amount) || 0,
+          date: payment.date,
+          exhibitorId: payment.exhibitorId,
+          source: payment.method || payment.source || 'Payments'
+        }))
+      : paidInvoices.map((invoice) => ({
+          amount: Number(invoice.amount) || 0,
+          date: invoice.paidDate || invoice.issueDate,
+          exhibitorId: invoice.exhibitorId,
+          source: 'Paid invoices'
+        }));
+
+    const monthLabels = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const monthsToShow = timeRange === 'month'
+      ? [now.getMonth()]
+      : timeRange === 'quarter'
+        ? [
+            Math.floor(now.getMonth() / 3) * 3,
+            Math.floor(now.getMonth() / 3) * 3 + 1,
+            Math.floor(now.getMonth() / 3) * 3 + 2
+          ]
+        : [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+
+    const monthly = monthsToShow.map((monthIndex) => {
+      const rows = revenueRows.filter((row) => {
+        const date = new Date(row.date);
+        return date.getFullYear() === selectedYear && date.getMonth() === monthIndex;
+      });
+      const exhibitors = new Set(rows.map((row) => row.exhibitorId).filter(Boolean)).size;
+      return {
+        month: monthLabels[monthIndex],
+        monthIndex,
+        revenue: rows.reduce((sum, row) => sum + row.amount, 0),
+        exhibitors,
+        growth: 0
+      };
+    });
+
+    monthly.forEach((item, index) => {
+      const previous = monthly[index - 1];
+      if (!previous || !previous.revenue) {
+        item.growth = 0;
+        return;
+      }
+      item.growth = Number((((item.revenue - previous.revenue) / previous.revenue) * 100).toFixed(1));
+    });
+
+    const totalRevenue = revenueRows.reduce((sum, row) => sum + row.amount, 0);
+    const firstWithRevenue = monthly.find((item) => item.revenue > 0);
+    const lastWithRevenue = [...monthly].reverse().find((item) => item.revenue > 0);
+    const growthRate = firstWithRevenue && lastWithRevenue && firstWithRevenue !== lastWithRevenue && firstWithRevenue.revenue
+      ? Number((((lastWithRevenue.revenue - firstWithRevenue.revenue) / firstWithRevenue.revenue) * 100).toFixed(1))
+      : 0;
+
+    const sourceTotals = new Map();
+    for (const row of revenueRows) {
+      const key = String(row.source || 'Other')
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, (letter) => letter.toUpperCase());
+      sourceTotals.set(key, (sourceTotals.get(key) || 0) + row.amount);
+    }
+
+    const sourceColors = ['bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-purple-500', 'bg-gray-500'];
+    const sources = [...sourceTotals.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([category, amount], index) => ({
+        category,
+        amount,
+        percentage: totalRevenue > 0 ? Number(((amount / totalRevenue) * 100).toFixed(1)) : 0,
+        color: sourceColors[index % sourceColors.length]
+      }));
+
+    const pendingPayments = payments
+      .filter((payment) => String(payment.status || '').toLowerCase() === 'pending' && inRange(payment.date))
+      .reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
+
+    const pendingInvoices = invoices
+      .filter((invoice) => String(invoice.status || '').toLowerCase() === 'pending' && inRange(invoice.issueDate))
+      .reduce((sum, invoice) => sum + (Number(invoice.amount) || 0), 0);
+
+    const years = new Set([selectedYear, now.getFullYear(), now.getFullYear() - 1]);
+    for (const invoice of invoices) {
+      const date = new Date(invoice.issueDate || invoice.paidDate);
+      if (!Number.isNaN(date.getTime())) years.add(date.getFullYear());
+    }
+    for (const payment of payments) {
+      const date = new Date(payment.date);
+      if (!Number.isNaN(date.getTime())) years.add(date.getFullYear());
+    }
+
+    return {
+      timeRange,
+      year: selectedYear,
+      totalRevenue,
+      growthRate,
+      exhibitorCount,
+      avgMonthlyRevenue: monthly.length ? totalRevenue / monthly.length : 0,
+      pendingPayments,
+      pendingInvoices,
+      monthly,
+      sources,
+      years: [...years].filter((value) => value >= 2000 && value <= now.getFullYear() + 1).sort((a, b) => b - a)
+    };
+  }
 }
 
 module.exports = new RevenueService();

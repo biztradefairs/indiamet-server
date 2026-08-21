@@ -146,6 +146,59 @@ const extractRequirementItems = (data) => {
   return items;
 };
 
+const parseStoredData = (record) => {
+  const raw = record.data || record.metadata;
+  if (!raw) return {};
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+  return raw;
+};
+
+const formatRequirement = (record, exhibitor) => {
+  const json = record.toJSON ? record.toJSON() : record;
+  const parsedData = parseStoredData(json);
+  const generalInfo = parsedData.generalInfo || {};
+  const boothDetails = parsedData.boothDetails || {};
+  const exhibitorJson = exhibitor?.toJSON ? exhibitor.toJSON() : exhibitor || {};
+  const contactName = [
+    generalInfo.title,
+    generalInfo.firstName,
+    generalInfo.lastName
+  ].filter(Boolean).join(' ');
+
+  return {
+    id: json.id,
+    requirementId: json.id,
+    exhibitorId: json.exhibitorId,
+    stallNumber: boothDetails.boothNo || exhibitorJson.boothNumber || null,
+    companyName: generalInfo.companyName || exhibitorJson.company || exhibitorJson.name || 'Unknown',
+    contactPerson: boothDetails.contactPerson || contactName || exhibitorJson.name || 'Unknown',
+    email: generalInfo.email || exhibitorJson.email || '',
+    phone: generalInfo.mobile || exhibitorJson.phone || '',
+    status: json.status || 'pending',
+    submittedAt: json.createdAt,
+    updatedAt: json.updatedAt,
+    notes: parsedData.notes || json.notes || '',
+    adminNotes: parsedData.adminNotes || '',
+    items: extractRequirementItems(parsedData),
+    metadata: {
+      boothArea: boothDetails.sqMtrBooked,
+      boothLocation: boothDetails.boothNo,
+      eventName: parsedData.eventName || 'INDIAMET',
+      eventDate: parsedData.eventDate,
+      address: parsedData.companyDetails?.address,
+      city: parsedData.companyDetails?.city,
+      state: parsedData.companyDetails?.state,
+      pincode: parsedData.companyDetails?.pincode
+    }
+  };
+};
+
 // =============================================
 // ADMIN ROUTES
 // =============================================
@@ -153,134 +206,80 @@ const extractRequirementItems = (data) => {
 // Get all extra requirements (admin)
 router.get('/admin/all', authenticate, authorize(['admin']), async (req, res) => {
   try {
-    const { page = 1, limit = 10, search, status } = req.query;
-    
-    const sequelize = require('../config/database').getConnection('mysql');
-    
-    if (!sequelize) {
-      throw new Error('Database connection not available');
-    }
-    
-    // Build WHERE clause for requirements
-    let whereClause = "WHERE type = 'exhibitor'";
-    const replacements = [];
-    
-    // Add status filter
+    const { search, status } = req.query;
+    const modelFactory = require('../models');
+    const { Op } = require('sequelize');
+    const Requirement = modelFactory.getModel('Requirement');
+    const Exhibitor = modelFactory.getModel('Exhibitor');
+
+    const where = {};
     if (status && status !== 'all') {
-      whereClause += ' AND status = ?';
-      replacements.push(status);
+      where.status = status;
     }
-    
-    // Add search filter
     if (search) {
-      whereClause += ' AND (data LIKE ? OR id LIKE ?)';
-      replacements.push(`%${search}%`, `%${search}%`);
+      where[Op.or] = [
+        { description: { [Op.iLike]: `%${search}%` } },
+        { type: { [Op.iLike]: `%${search}%` } }
+      ];
     }
-    
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    
-    // Get all requirements
-    const [requirements] = await sequelize.query(`
-      SELECT * FROM requirements 
-      ${whereClause}
-      ORDER BY createdAt DESC
-      LIMIT ? OFFSET ?
-    `, {
-      replacements: [...replacements, parseInt(limit), offset]
+
+    const requirements = await Requirement.findAll({
+      where,
+      order: [['createdAt', 'DESC']]
     });
-    
-    // Get total count
-    const [totalResult] = await sequelize.query(`
-      SELECT COUNT(*) as total FROM requirements ${whereClause}
-    `, {
-      replacements
-    });
-    
-    const total = totalResult[0]?.total || 0;
-    
-    // Parse and group requirements by exhibitor
-    const groupedRequirements = {};
-    
-    for (const req of requirements) {
-      let parsedData = {};
-      if (req.data) {
-        try {
-          parsedData = typeof req.data === 'string' ? JSON.parse(req.data) : req.data;
-        } catch (e) {
-          console.error('Error parsing requirement data:', e);
-          parsedData = {};
-        }
-      }
-      
-      const exhibitorId = req.exhibitorId;
-      const generalInfo = parsedData.generalInfo || {};
-      const boothDetails = parsedData.boothDetails || {};
-      
-      if (!groupedRequirements[exhibitorId]) {
-        // Get exhibitor details
-        let exhibitor = {};
-        try {
-          const [exhibitors] = await sequelize.query(`
-            SELECT id, name, companyName, email, phone, stallNumber, contactPerson 
-            FROM exhibitors 
-            WHERE id = ?
-          `, {
-            replacements: [exhibitorId]
-          });
-          exhibitor = exhibitors[0] || {};
-        } catch (err) {
-          console.error('Error fetching exhibitor:', err);
-        }
-        
-        groupedRequirements[exhibitorId] = {
-          id: req.id,
-          requirementId: req.id,
-          exhibitorId: exhibitorId,
-          stallNumber: boothDetails.boothNo || exhibitor.stallNumber,
-          companyName: generalInfo.companyName || exhibitor.companyName || exhibitor.name || 'Unknown',
-          contactPerson: boothDetails.contactPerson || generalInfo.firstName || exhibitor.contactPerson || 'Unknown',
-          email: generalInfo.email || exhibitor.email || 'unknown@email.com',
-          phone: generalInfo.mobile || exhibitor.phone || 'N/A',
-          status: req.status,
-          submittedAt: req.createdAt,
-          updatedAt: req.updatedAt,
-          notes: '',
-          items: [],
-          metadata: {
-            boothArea: boothDetails.sqMtrBooked,
-            boothLocation: boothDetails.boothNo,
-            eventName: parsedData.eventName || 'DiemEx 2024',
-            eventDate: parsedData.eventDate,
-            address: parsedData.companyDetails?.address
-          }
-        };
-      }
-      
-      // Extract items from the parsed data
-      const items = extractRequirementItems(parsedData);
-      groupedRequirements[exhibitorId].items.push(...items);
-    }
-    
-    const formattedRequirements = Object.values(groupedRequirements);
-    
+
+    const exhibitorIds = [...new Set(requirements.map((item) => item.exhibitorId).filter(Boolean))];
+    const exhibitors = exhibitorIds.length
+      ? await Exhibitor.findAll({ where: { id: exhibitorIds } })
+      : [];
+    const exhibitorMap = Object.fromEntries(exhibitors.map((exhibitor) => [exhibitor.id, exhibitor]));
+
+    const formattedRequirements = requirements.map((item) =>
+      formatRequirement(item, exhibitorMap[item.exhibitorId])
+    );
+
     res.json({
       success: true,
-      data: formattedRequirements,
-      pagination: {
-        total,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        totalPages: Math.ceil(total / parseInt(limit))
-      }
+      data: formattedRequirements
     });
-    
   } catch (error) {
     console.error('Error fetching extra requirements:', error);
-    console.error('Stack:', error.stack);
     res.status(500).json({
       success: false,
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: error.message
+    });
+  }
+});
+
+router.get('/admin/stats', authenticate, authorize(['admin']), async (req, res) => {
+  try {
+    const modelFactory = require('../models');
+    const { Op } = require('sequelize');
+    const Requirement = modelFactory.getModel('Requirement');
+
+    const [total, pending, approved, rejected, completed] = await Promise.all([
+      Requirement.count(),
+      Requirement.count({ where: { status: 'pending' } }),
+      Requirement.count({ where: { status: 'approved' } }),
+      Requirement.count({ where: { status: 'rejected' } }),
+      Requirement.count({ where: { status: 'completed' } })
+    ]);
+
+    const uniqueExhibitors = await Requirement.count({
+      distinct: true,
+      col: 'exhibitorId',
+      where: { exhibitorId: { [Op.ne]: null } }
+    });
+
+    res.json({
+      success: true,
+      data: { total, pending, approved, rejected, completed, uniqueExhibitors }
+    });
+  } catch (error) {
+    console.error('Error fetching requirement stats:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });
@@ -288,100 +287,28 @@ router.get('/admin/all', authenticate, authorize(['admin']), async (req, res) =>
 // Get single requirement by ID (admin)
 router.get('/:id', authenticate, authorize(['admin']), async (req, res) => {
   try {
-    const { id } = req.params;
-    
-    const sequelize = require('../config/database').getConnection('mysql');
-    
-    if (!sequelize) {
-      throw new Error('Database connection not available');
+    const modelFactory = require('../models');
+    const Requirement = modelFactory.getModel('Requirement');
+    const Exhibitor = modelFactory.getModel('Exhibitor');
+
+    const record = await Requirement.findByPk(req.params.id);
+    if (!record) {
+      return res.status(404).json({ success: false, error: 'Requirement not found' });
     }
-    
-    // Get requirement by ID
-    const [requirements] = await sequelize.query(`
-      SELECT * FROM requirements 
-      WHERE id = ?
-    `, {
-      replacements: [id]
-    });
-    
-    if (!requirements || requirements.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Requirement not found'
-      });
-    }
-    
-    const reqRecord = requirements[0];
-    let parsedData = {};
-    
-    if (reqRecord.data) {
-      try {
-        parsedData = typeof reqRecord.data === 'string' ? JSON.parse(reqRecord.data) : reqRecord.data;
-      } catch (e) {
-        console.error('Error parsing requirement data:', e);
-        parsedData = {};
-      }
-    }
-    
-    // Get exhibitor details
-    const exhibitorId = reqRecord.exhibitorId;
-    let exhibitor = {};
-    try {
-      const [exhibitors] = await sequelize.query(`
-        SELECT id, name, companyName, email, phone, stallNumber, contactPerson 
-        FROM exhibitors 
-        WHERE id = ?
-      `, {
-        replacements: [exhibitorId]
-      });
-      exhibitor = exhibitors[0] || {};
-    } catch (err) {
-      console.error('Error fetching exhibitor:', err);
-    }
-    
-    const generalInfo = parsedData.generalInfo || {};
-    const boothDetails = parsedData.boothDetails || {};
-    const items = extractRequirementItems(parsedData);
-    
-    const requirement = {
-      id: reqRecord.id,
-      requirementId: reqRecord.id,
-      exhibitorId: exhibitorId,
-      stallNumber: boothDetails.boothNo || exhibitor.stallNumber,
-      companyName: generalInfo.companyName || exhibitor.companyName || exhibitor.name || 'Unknown',
-      contactPerson: boothDetails.contactPerson || generalInfo.firstName || exhibitor.contactPerson || 'Unknown',
-      email: generalInfo.email || exhibitor.email || 'unknown@email.com',
-      phone: generalInfo.mobile || exhibitor.phone || 'N/A',
-      status: reqRecord.status,
-      submittedAt: reqRecord.createdAt,
-      updatedAt: reqRecord.updatedAt,
-      notes: parsedData.notes || '',
-      adminNotes: parsedData.adminNotes || '',
-      items: items,
-      metadata: {
-        boothArea: boothDetails.sqMtrBooked,
-        boothLocation: boothDetails.boothNo,
-        eventName: parsedData.eventName || 'DiemEx 2024',
-        eventDate: parsedData.eventDate,
-        address: parsedData.companyDetails?.address,
-        city: parsedData.companyDetails?.city,
-        state: parsedData.companyDetails?.state,
-        pincode: parsedData.companyDetails?.pincode
-      }
-    };
-    
+
+    const exhibitor = record.exhibitorId
+      ? await Exhibitor.findByPk(record.exhibitorId)
+      : null;
+
     res.json({
       success: true,
-      data: requirement
+      data: formatRequirement(record, exhibitor)
     });
-    
   } catch (error) {
     console.error('Error fetching requirement details:', error);
-    console.error('Stack:', error.stack);
     res.status(500).json({
       success: false,
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: error.message
     });
   }
 });
@@ -389,165 +316,36 @@ router.get('/:id', authenticate, authorize(['admin']), async (req, res) => {
 // Update requirement status (admin)
 router.put('/admin/:id', authenticate, authorize(['admin']), async (req, res) => {
   try {
-    const { id } = req.params;
     const { status, adminNotes } = req.body;
-    
-    const sequelize = require('../config/database').getConnection('mysql');
-    
-    if (!sequelize) {
-      throw new Error('Database connection not available');
+    const modelFactory = require('../models');
+    const Requirement = modelFactory.getModel('Requirement');
+    const Exhibitor = modelFactory.getModel('Exhibitor');
+
+    const record = await Requirement.findByPk(req.params.id);
+    if (!record) {
+      return res.status(404).json({ success: false, error: 'Requirement not found' });
     }
-    
-    // Get existing requirement
-    const [existing] = await sequelize.query(`
-      SELECT * FROM requirements WHERE id = ?
-    `, {
-      replacements: [id]
-    });
-    
-    if (!existing || existing.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Requirement not found'
-      });
-    }
-    
-    const reqRecord = existing[0];
-    let parsedData = {};
-    if (reqRecord.data) {
-      try {
-        parsedData = typeof reqRecord.data === 'string' ? JSON.parse(reqRecord.data) : reqRecord.data;
-      } catch (e) {
-        parsedData = {};
-      }
-    }
-    
-    // Update admin notes in the data field
+
+    const parsedData = parseStoredData(record);
     parsedData.adminNotes = adminNotes;
     parsedData.updatedBy = req.user?.id;
     parsedData.updatedAt = new Date().toISOString();
-    
-    // Update requirement
-    await sequelize.query(`
-      UPDATE requirements 
-      SET status = ?, data = ?, updatedAt = NOW()
-      WHERE id = ?
-    `, {
-      replacements: [status, JSON.stringify(parsedData), id]
+
+    await record.update({
+      status: status || record.status,
+      data: parsedData
     });
-    
-    // Get updated requirement
-    const [updated] = await sequelize.query(`
-      SELECT * FROM requirements WHERE id = ?
-    `, {
-      replacements: [id]
-    });
-    
-    const updatedReq = updated[0];
-    let updatedData = {};
-    if (updatedReq.data) {
-      try {
-        updatedData = typeof updatedReq.data === 'string' ? JSON.parse(updatedReq.data) : updatedReq.data;
-      } catch (e) {
-        updatedData = {};
-      }
-    }
-    
-    // Get exhibitor details
-    const exhibitorId = updatedReq.exhibitorId;
-    let exhibitor = {};
-    try {
-      const [exhibitors] = await sequelize.query(`
-        SELECT id, name, companyName, email, phone, stallNumber, contactPerson 
-        FROM exhibitors 
-        WHERE id = ?
-      `, {
-        replacements: [exhibitorId]
-      });
-      exhibitor = exhibitors[0] || {};
-    } catch (err) {
-      console.error('Error fetching exhibitor:', err);
-    }
-    
-    const generalInfo = updatedData.generalInfo || {};
-    const boothDetails = updatedData.boothDetails || {};
-    const items = extractRequirementItems(updatedData);
-    
-    const requirement = {
-      id: updatedReq.id,
-      requirementId: updatedReq.id,
-      exhibitorId: exhibitorId,
-      stallNumber: boothDetails.boothNo || exhibitor.stallNumber,
-      companyName: generalInfo.companyName || exhibitor.companyName || exhibitor.name || 'Unknown',
-      contactPerson: boothDetails.contactPerson || generalInfo.firstName || exhibitor.contactPerson || 'Unknown',
-      email: generalInfo.email || exhibitor.email || 'unknown@email.com',
-      phone: generalInfo.mobile || exhibitor.phone || 'N/A',
-      status: status,
-      submittedAt: updatedReq.createdAt,
-      updatedAt: new Date().toISOString(),
-      notes: updatedData.notes || '',
-      adminNotes: adminNotes,
-      items: items,
-      metadata: {
-        boothArea: boothDetails.sqMtrBooked,
-        boothLocation: boothDetails.boothNo,
-        eventName: updatedData.eventName || 'DiemEx 2024',
-        eventDate: updatedData.eventDate
-      }
-    };
-    
+
+    const exhibitor = record.exhibitorId
+      ? await Exhibitor.findByPk(record.exhibitorId)
+      : null;
+
     res.json({
       success: true,
-      data: requirement,
-      message: 'Requirement updated successfully'
+      data: formatRequirement(record, exhibitor)
     });
-    
   } catch (error) {
     console.error('Error updating requirement:', error);
-    console.error('Stack:', error.stack);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
-// Get requirement stats (admin)
-router.get('/admin/stats', authenticate, authorize(['admin']), async (req, res) => {
-  try {
-    const sequelize = require('../config/database').getConnection('mysql');
-    
-    if (!sequelize) {
-      throw new Error('Database connection not available');
-    }
-    
-    const [stats] = await sequelize.query(`
-      SELECT 
-        COUNT(*) as total,
-        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
-        SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved,
-        SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected,
-        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
-        COUNT(DISTINCT exhibitorId) as uniqueExhibitors
-      FROM requirements
-      WHERE type = 'exhibitor'
-    `);
-    
-    res.json({
-      success: true,
-      data: stats[0] || {
-        total: 0,
-        pending: 0,
-        approved: 0,
-        rejected: 0,
-        completed: 0,
-        uniqueExhibitors: 0
-      }
-    });
-    
-  } catch (error) {
-    console.error('Error fetching requirement stats:', error);
     res.status(500).json({
       success: false,
       error: error.message

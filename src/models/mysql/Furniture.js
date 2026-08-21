@@ -43,6 +43,10 @@ module.exports = (sequelize) => {
       type: DataTypes.BOOLEAN,
       defaultValue: true
     },
+    isActive: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true
+    },
     imageUrl: {
       type: DataTypes.STRING,
       allowNull: true
@@ -63,6 +67,9 @@ module.exports = (sequelize) => {
       },
       {
         fields: ['inStock']
+      },
+      {
+        fields: ['isActive']
       }
     ]
   });

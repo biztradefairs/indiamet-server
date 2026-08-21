@@ -2,6 +2,22 @@
 const revenueService = require('../services/RevenueService');
 
 class RevenueController {
+  async getAdminAnalytics(req, res) {
+    try {
+      const { timeRange = 'year', year } = req.query;
+      const data = await revenueService.getAdminAnalytics(timeRange, year);
+      res.json({
+        success: true,
+        data
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  }
+
   async getRevenueSummary(req, res) {
     try {
       const { timeRange = 'month' } = req.query;

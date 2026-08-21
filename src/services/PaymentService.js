@@ -26,13 +26,15 @@ class PaymentService {
       // Get models
       this._paymentModel = modelFactory.getModel('Payment');
       this._invoiceModel = modelFactory.getModel('Invoice');
-      
+
       if (!this._paymentModel) {
         throw new Error('Payment model not found');
       }
-      
-      if (!this._invoiceModel) {
-        console.warn('⚠️ Invoice model not found, continuing without it');
+
+      try {
+        await this._paymentModel.sync();
+      } catch (syncError) {
+        console.warn('⚠️ Payment table sync warning:', syncError.message);
       }
       
       this.initialized = true;
@@ -115,6 +117,10 @@ class PaymentService {
       // Method filter
       if (filters.method && filters.method !== 'all') {
         where.method = filters.method;
+      }
+
+      if (filters.exhibitorId) {
+        where.exhibitorId = filters.exhibitorId;
       }
       
       // Date range filter

@@ -733,84 +733,31 @@ router.post('/requirements', async (req, res) => {
     console.log('Keys:', Object.keys(completeData));
     console.log('Housekeeping:', completeData.housekeepingStaff);
 
-    const sequelize = require('../config/database').getConnection('mysql');
-    
-    // First, check what columns exist
-    const [columns] = await sequelize.query(`
-      SHOW COLUMNS FROM requirements
-    `);
-    
-    const columnNames = columns.map(c => c.Field);
-    console.log('Available columns:', columnNames);
-    
-    // Generate UUID
+    const modelFactory = require('../models');
+    const Requirement = modelFactory.getModel('Requirement');
     const requirementId = require('crypto').randomUUID();
     const now = new Date();
-    
-    // Build insert query based on actual columns
-    const insertFields = ['id', 'type', 'description', 'quantity', 'status', 'createdAt', 'updatedAt'];
-    const insertValues = [requirementId, type, description, 1, 'pending', now, now];
-    
-    // Check for exhibitorId column (try common variations)
-    let exhibitorColumn = null;
-    if (columnNames.includes('exhibitorId')) {
-      exhibitorColumn = 'exhibitorId';
-    } else if (columnNames.includes('exhibitor_id')) {
-      exhibitorColumn = 'exhibitor_id';
-    } else if (columnNames.includes('exhibitorId')) {
-      exhibitorColumn = 'exhibitorId';
-    }
-    
-    if (exhibitorColumn && req.user?.id) {
-      insertFields.push(exhibitorColumn);
-      insertValues.push(req.user.id);
-      console.log(`✅ Adding ${exhibitorColumn} column with value:`, req.user.id);
-    } else {
-      console.log('⚠️ No exhibitor column found or no user ID');
-    }
-    
-    // Check for data column (or metadata)
-    let dataColumn = null;
-    if (columnNames.includes('data')) {
-      dataColumn = 'data';
-    } else if (columnNames.includes('metadata')) {
-      dataColumn = 'metadata';
-    }
-    
-    if (dataColumn) {
-      insertFields.push(dataColumn);
-      insertValues.push(JSON.stringify(completeData));
-      console.log(`✅ Adding ${dataColumn} column with data`);
-    } else {
-      console.log('⚠️ No data/metadata column found');
-    }
-    
-    // Build and execute query
-    const placeholders = insertValues.map(() => '?').join(', ');
-    const query = `INSERT INTO requirements (${insertFields.join(', ')}) VALUES (${placeholders})`;
-    
-    console.log('Executing query:', query);
-    console.log('Values:', insertValues.map(v => {
-      if (typeof v === 'object') return 'JSON_OBJECT';
-      if (typeof v === 'string' && v.length > 100) return v.substring(0, 100) + '...';
-      return v;
-    }));
-    
-    await sequelize.query(query, {
-      replacements: insertValues,
-      type: sequelize.QueryTypes.INSERT
+
+    const created = await Requirement.create({
+      id: requirementId,
+      exhibitorId: req.user?.id,
+      type,
+      description,
+      quantity: 1,
+      status: 'pending',
+      data: completeData
     });
-    
-    console.log('✅ Requirement saved with ID:', requirementId);
+
+    console.log('✅ Requirement saved with ID:', created.id);
 
     res.json({
       success: true,
       message: 'Requirement submitted successfully',
       data: {
-        id: requirementId,
-        type: type,
-        status: 'pending',
-        createdAt: now
+        id: created.id,
+        type: created.type,
+        status: created.status,
+        createdAt: created.createdAt || now
       }
     });
 

@@ -4,6 +4,51 @@ const router = express.Router();
 const { authenticateExhibitor, authenticate, authorize } = require('../middleware/auth');
 const crypto = require('crypto');
 
+const mapPaymentMethod = (mode = '') => {
+  const value = String(mode).toLowerCase();
+  if (value.includes('card') || value.includes('credit')) return 'credit_card';
+  if (value.includes('bank') || value.includes('neft') || value.includes('rtgs') || value.includes('dd')) return 'bank_transfer';
+  if (value.includes('cheque') || value.includes('check')) return 'check';
+  if (value.includes('online') || value.includes('cashfree') || value.includes('upi')) return 'online';
+  if (value.includes('cash')) return 'cash';
+  return 'online';
+};
+
+const mapPaymentStatus = (status = '') => {
+  const value = String(status).toLowerCase();
+  if (value.includes('paid') || value.includes('complet') || value.includes('verif')) return 'completed';
+  if (value.includes('fail') || value.includes('reject')) return 'failed';
+  if (value.includes('refund')) return 'refunded';
+  return 'pending';
+};
+
+const serializePayment = (payment, exhibitor) => {
+  const json = payment.toJSON ? payment.toJSON() : payment;
+  return {
+    id: json.id,
+    invoiceNumber: json.invoiceNumber,
+    company: exhibitor?.company || json.metadata?.company || json.invoiceNumber,
+    amount: Number(json.amount) || 0,
+    status: json.status,
+    method: json.method,
+    date: json.date,
+    dueDate: json.dueDate,
+    processedBy: json.processedBy || 'System',
+    exhibitorName: exhibitor?.name,
+    transactionId: json.transactionId,
+    notes: json.notes
+  };
+};
+
+const loadExhibitorsByIds = async (ids) => {
+  const modelFactory = require('../models');
+  const Exhibitor = modelFactory.getModel('Exhibitor');
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  if (!uniqueIds.length) return {};
+  const exhibitors = await Exhibitor.findAll({ where: { id: uniqueIds } });
+  return Object.fromEntries(exhibitors.map((exhibitor) => [exhibitor.id, exhibitor.toJSON()]));
+};
+
 // ==================== CASH/CHEQUE/DD PAYMENT ROUTES ====================
 
 // Submit cash payment details
@@ -16,66 +61,53 @@ router.post('/cash-payment', authenticateExhibitor, async (req, res) => {
       amountPaid,
       paymentMode,
       paymentDate,
-      chequeNumber,
-      chequeDate,
-      bankName,
-      ddNumber,
-      ddDate,
       remarks,
-      status = 'pending_verification'
+      status = 'pending'
     } = req.body;
 
-    const sequelize = require('../config/database').getConnection('mysql');
+    const paymentService = require('../services/PaymentService');
+    const modelFactory = require('../models');
+    const Invoice = modelFactory.getModel('Invoice');
 
-    const paymentReference = `PAY-${Date.now()}-${Math.random().toString(36).substr(2, 6).toUpperCase()}`;
-    const paymentId = crypto.randomUUID();
-    const now = new Date();
+    let invoiceNumber = `PAY-${Date.now()}`;
+    if (invoiceId) {
+      const invoice = await Invoice.findByPk(invoiceId);
+      if (invoice?.invoiceNumber) {
+        invoiceNumber = invoice.invoiceNumber;
+      }
+    }
 
-    await sequelize.query(`
-      INSERT INTO payments (
-        id, exhibitor_id, invoice_id, requirement_id, payment_reference,
-        amount, amount_paid, payment_mode, payment_date,
-        cheque_number, cheque_date, bank_name,
-        dd_number, dd_date,
-        remarks, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, {
-      replacements: [
-        paymentId, req.user.id, invoiceId, requirementId, paymentReference,
-        amount, amountPaid || amount, paymentMode,
-        paymentDate || now.toISOString().split('T')[0],
-        chequeNumber || null, chequeDate || null, bankName || null,
-        ddNumber || null, ddDate || null,
-        remarks || null, status, now, now
-      ]
+    const payment = await paymentService.createPayment({
+      invoiceNumber,
+      invoiceId: invoiceId || null,
+      exhibitorId: req.user.id,
+      amount: amountPaid || amount,
+      method: mapPaymentMethod(paymentMode),
+      status: mapPaymentStatus(status),
+      date: paymentDate || new Date(),
+      processedBy: req.user.company || req.user.name || 'Exhibitor',
+      notes: remarks || null,
+      metadata: {
+        requirementId,
+        paymentMode
+      }
     });
 
     if (invoiceId) {
-      await sequelize.query(`
-        UPDATE invoices 
-        SET status = 'pending_verification', 
-            payment_reference = ?, updated_at = ?
-        WHERE id = ?
-      `, {
-        replacements: [paymentReference, now, invoiceId]
-      });
-    }
-
-    if (requirementId) {
-      await sequelize.query(`
-        UPDATE requirements 
-        SET payment_status = 'pending',
-            payment_reference = ?, updated_at = ?
-        WHERE id = ?
-      `, {
-        replacements: [paymentReference, now, requirementId]
-      });
+      await Invoice.update(
+        { status: payment.status === 'completed' ? 'paid' : 'pending' },
+        { where: { id: invoiceId } }
+      );
     }
 
     res.json({
       success: true,
       message: 'Payment submitted successfully',
-      data: { paymentId, paymentReference, status }
+      data: {
+        paymentId: payment.id,
+        paymentReference: payment.transactionId,
+        status: payment.status
+      }
     });
 
   } catch (error) {
@@ -89,18 +121,9 @@ router.post('/cash-payment', authenticateExhibitor, async (req, res) => {
 // Get my payments
 router.get('/my-payments', authenticateExhibitor, async (req, res) => {
   try {
-    const sequelize = require('../config/database').getConnection('mysql');
-
-    const [payments] = await sequelize.query(`
-      SELECT * FROM payments 
-      WHERE exhibitor_id = ?
-      ORDER BY created_at DESC
-    `, {
-      replacements: [req.user.id]
-    });
-
-    res.json({ success: true, data: payments });
-
+    const paymentService = require('../services/PaymentService');
+    const result = await paymentService.getAllPayments({ exhibitorId: req.user.id }, 1, 500);
+    res.json({ success: true, data: result.payments });
   } catch (error) {
     console.error(error);
     res.status(500).json({ success: false, error: error.message });
@@ -112,18 +135,13 @@ router.get('/my-payments', authenticateExhibitor, async (req, res) => {
 // Pending payments
 router.get('/admin/pending', authenticate, authorize(['admin']), async (req, res) => {
   try {
-    const sequelize = require('../config/database').getConnection('mysql');
-
-    const [payments] = await sequelize.query(`
-      SELECT p.*, e.company as exhibitor_company, e.name as exhibitor_name
-      FROM payments p
-      JOIN exhibitors e ON p.exhibitor_id = e.id
-      WHERE p.status = 'pending_verification'
-      ORDER BY p.created_at ASC
-    `);
-
-    res.json({ success: true, data: payments });
-
+    const paymentService = require('../services/PaymentService');
+    const result = await paymentService.getAllPayments({ status: 'pending' }, 1, 500);
+    const exhibitors = await loadExhibitorsByIds(result.payments.map((payment) => payment.exhibitorId));
+    res.json({
+      success: true,
+      data: result.payments.map((payment) => serializePayment(payment, exhibitors[payment.exhibitorId]))
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -133,16 +151,34 @@ router.get('/admin/pending', authenticate, authorize(['admin']), async (req, res
 router.get('/admin/all', authenticate, authorize(['admin']), async (req, res) => {
   try {
     const sequelize = require('../config/database').getConnection('mysql');
-
     const [payments] = await sequelize.query(`
-      SELECT p.*, e.company as exhibitor_company, e.name as exhibitor_name
+      SELECT
+        p.id,
+        p."invoiceNumber",
+        p."invoiceId",
+        p."exhibitorId",
+        p.amount,
+        p.status,
+        p.method,
+        p.date,
+        p."dueDate",
+        p."processedBy",
+        p."transactionId",
+        p.notes,
+        e.company,
+        e.name AS exhibitor_name
       FROM payments p
-      JOIN exhibitors e ON p.exhibitor_id = e.id
-      ORDER BY p.created_at DESC
+      LEFT JOIN exhibitors e ON e.id = p."exhibitorId"
+      ORDER BY p.date DESC NULLS LAST
     `);
 
-    res.json({ success: true, data: payments });
-
+    res.json({
+      success: true,
+      data: payments.map((payment) => serializePayment(payment, {
+        company: payment.company,
+        name: payment.exhibitor_name
+      }))
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -153,48 +189,44 @@ router.put('/admin/:paymentId/verify', authenticate, authorize(['admin']), async
   try {
     const { paymentId } = req.params;
     const { status, adminRemarks } = req.body;
+    const paymentService = require('../services/PaymentService');
+    const mappedStatus = mapPaymentStatus(status);
+    const payment = await paymentService.updatePaymentStatus(paymentId, mappedStatus, adminRemarks || '');
 
-    const sequelize = require('../config/database').getConnection('mysql');
-    const now = new Date();
-
-    await sequelize.query(`
-      UPDATE payments 
-      SET status = ?, admin_remarks = ?, verified_at = ?, updated_at = ?
-      WHERE id = ?
-    `, {
-      replacements: [status, adminRemarks || null, now, now, paymentId]
-    });
-
-    const [payments] = await sequelize.query(`SELECT * FROM payments WHERE id = ?`, {
-      replacements: [paymentId]
-    });
-
-    if (payments.length > 0 && status === 'verified') {
-      const payment = payments[0];
-
-      if (payment.invoice_id) {
-        await sequelize.query(`
-          UPDATE invoices 
-          SET status = 'paid', paid_at = ?, updated_at = ?
-          WHERE id = ?
-        `, {
-          replacements: [now, now, payment.invoice_id]
-        });
-      }
-
-      if (payment.requirement_id) {
-        await sequelize.query(`
-          UPDATE requirements 
-          SET payment_status = 'completed', status = 'approved', updated_at = ?
-          WHERE id = ?
-        `, {
-          replacements: [now, payment.requirement_id]
-        });
-      }
+    if (mappedStatus === 'completed' && payment.invoiceId) {
+      const modelFactory = require('../models');
+      const Invoice = modelFactory.getModel('Invoice');
+      await Invoice.update(
+        { status: 'paid', paidDate: new Date() },
+        { where: { id: payment.invoiceId } }
+      );
     }
 
-    res.json({ success: true, message: 'Payment updated successfully' });
+    res.json({ success: true, message: 'Payment updated successfully', data: payment });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
+router.patch('/:id/status', authenticate, authorize(['admin']), async (req, res) => {
+  try {
+    const paymentService = require('../services/PaymentService');
+    const payment = await paymentService.updatePaymentStatus(
+      req.params.id,
+      mapPaymentStatus(req.body.status),
+      req.body.notes || ''
+    );
+    res.json({ success: true, data: payment });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post('/:id/refund', authenticate, authorize(['admin']), async (req, res) => {
+  try {
+    const paymentService = require('../services/PaymentService');
+    const result = await paymentService.refundPayment(req.params.id, req.body.reason || 'Admin refund');
+    res.json({ success: true, data: result });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -203,20 +235,9 @@ router.put('/admin/:paymentId/verify', authenticate, authorize(['admin']), async
 // Stats
 router.get('/admin/stats', authenticate, authorize(['admin']), async (req, res) => {
   try {
-    const sequelize = require('../config/database').getConnection('mysql');
-
-    const [stats] = await sequelize.query(`
-      SELECT 
-        COUNT(*) as total,
-        SUM(CASE WHEN status = 'pending_verification' THEN 1 ELSE 0 END) as pending,
-        SUM(CASE WHEN status = 'verified' THEN 1 ELSE 0 END) as verified,
-        SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected,
-        SUM(CASE WHEN status = 'verified' THEN amount ELSE 0 END) as total_verified_amount
-      FROM payments
-    `);
-
-    res.json({ success: true, data: stats[0] });
-
+    const paymentService = require('../services/PaymentService');
+    const stats = await paymentService.getPaymentStats('year');
+    res.json({ success: true, data: stats });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -227,24 +248,14 @@ router.get('/admin/stats', authenticate, authorize(['admin']), async (req, res) 
 // Get single payment
 router.get('/:paymentId', authenticateExhibitor, async (req, res) => {
   try {
-    const { paymentId } = req.params;
-    const sequelize = require('../config/database').getConnection('mysql');
-
-    const [payments] = await sequelize.query(`
-      SELECT * FROM payments 
-      WHERE id = ? AND exhibitor_id = ?
-    `, {
-      replacements: [paymentId, req.user.id]
-    });
-
-    if (!payments.length) {
+    const paymentService = require('../services/PaymentService');
+    const payment = await paymentService.getPaymentById(req.params.paymentId);
+    if (payment.exhibitorId && payment.exhibitorId !== req.user.id) {
       return res.status(404).json({ success: false, error: 'Not found' });
     }
-
-    res.json({ success: true, data: payments[0] });
-
+    res.json({ success: true, data: payment });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(404).json({ success: false, error: error.message });
   }
 });
 
