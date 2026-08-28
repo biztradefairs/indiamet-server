@@ -122,6 +122,10 @@ const modelFactories = {
     const factory = require('./mysql/Visitor');
     return factory(database.getConnection('mysql'));
   },
+  VisitorPass: () => {
+    const factory = require('./mysql/VisitorPass');
+    return factory(database.getConnection('mysql'));
+  },
   Notification: () => {
     const factory = require('./mysql/Notification');
     return factory(database.getConnection('mysql'));
