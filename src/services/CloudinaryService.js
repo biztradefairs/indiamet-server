@@ -1,4 +1,5 @@
 const cloudinary = require('cloudinary').v2;
+const path = require('path');
 
 class CloudinaryService {
   constructor() {
@@ -11,17 +12,54 @@ class CloudinaryService {
     console.log('☁️ Cloudinary configured');
   }
 
+  pagePreviewUrl(publicId, page = 1) {
+    return cloudinary.url(publicId, {
+      secure: true,
+      resource_type: 'image',
+      type: 'upload',
+      format: 'jpg',
+      page,
+      quality: 'auto'
+    });
+  }
+
+  imageUrl(publicId) {
+    return cloudinary.url(publicId, {
+      secure: true,
+      resource_type: 'image',
+      type: 'upload'
+    });
+  }
+
+  downloadUrl(publicId, { fileType, fileName } = {}) {
+    const safeName = String(fileName || 'INDIAMET-Floor-Plan')
+      .replace(/\.[^.]+$/, '')
+      .replace(/[^\w.-]+/g, '_');
+
+    if (fileType === 'document') {
+      return this.signedRawUrl(publicId);
+    }
+
+    return cloudinary.url(publicId, {
+      secure: true,
+      resource_type: 'image',
+      type: 'upload',
+      format: fileType === 'pdf' ? 'pdf' : undefined,
+      flags: `attachment:${safeName}`
+    });
+  }
+
   // ================================
   // Upload File (Image / PDF / Any)
   // ================================
   async uploadFile(fileBuffer, options = {}) {
     try {
+      const { filename, ...rest } = options;
       const uploadOptions = {
         folder: 'exhibition-files',
-        resource_type: options.resource_type || 'image',
+        resource_type: rest.resource_type || 'image',
         type: 'upload',
-        access_mode: 'public',
-        ...options
+        ...rest
       };
 
       const result = await new Promise((resolve, reject) => {
@@ -41,13 +79,57 @@ class CloudinaryService {
         url: result.secure_url,
         publicId: result.public_id,
         format: result.format,
-        bytes: result.bytes
+        bytes: result.bytes,
+        width: result.width,
+        height: result.height,
+        pages: result.pages,
+        resourceType: result.resource_type
       };
 
     } catch (error) {
       console.error('❌ Cloudinary upload error:', error.message);
       throw new Error(`Upload failed: ${error.message}`);
     }
+  }
+
+  async uploadFloorPlan(fileBuffer, { fileType, filename } = {}) {
+    const ext = path.extname(filename || '').toLowerCase();
+    const stamp = `floor-plan-${Date.now()}`;
+
+    const tryUpload = async (resourceType, publicId) => this.uploadFile(fileBuffer, {
+      folder: 'exhibition-floor-plans',
+      resource_type: resourceType,
+      public_id: publicId,
+      overwrite: true,
+      invalidate: true
+    });
+
+    let result;
+    let resourceType = fileType === 'document' ? 'raw' : 'image';
+
+    try {
+      result = await tryUpload(
+        resourceType,
+        resourceType === 'raw' ? `${stamp}${ext || ''}` : stamp
+      );
+    } catch (error) {
+      if (fileType !== 'pdf') throw error;
+      resourceType = 'raw';
+      result = await tryUpload('raw', `${stamp}.pdf`);
+    }
+
+    const displayUrl = fileType === 'pdf' && resourceType === 'image'
+      ? this.pagePreviewUrl(result.publicId, 1)
+      : fileType === 'document' || resourceType === 'raw'
+        ? this.signedRawUrl(result.publicId)
+        : result.url;
+
+    return {
+      ...result,
+      url: displayUrl,
+      originalUrl: result.url,
+      resourceType
+    };
   }
 
   // ================================

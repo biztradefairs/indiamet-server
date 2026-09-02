@@ -16,31 +16,16 @@ function classifyFile(file = {}) {
   return 'document';
 }
 
-function publicFileUrl(relativePath) {
-  const base = (process.env.BACKEND_URL || process.env.PUBLIC_SITE_URL || 'http://localhost:5000').replace(/\/$/, '');
-  return `${base}${relativePath}`;
-}
-
-function floorPlanUploadDir() {
-  return path.join(process.cwd(), 'uploads', 'floor-plans');
-}
-
-function latestLocalFloorPlanUrl() {
-  const dir = floorPlanUploadDir();
-  if (!fs.existsSync(dir)) return null;
-  const files = fs.readdirSync(dir)
-    .filter((name) => !name.startsWith('.'))
-    .map((name) => ({
-      name,
-      time: fs.statSync(path.join(dir, name)).mtimeMs
-    }))
-    .sort((a, b) => b.time - a.time);
-  if (!files[0]) return null;
-  return publicFileUrl(`/uploads/floor-plans/${files[0].name}`);
-}
-
-function isPrivateCloudinaryUrl(url) {
-  return /res\.cloudinary\.com\/.+\/raw\//i.test(String(url || ''));
+function clearLocalFloorPlans() {
+  const dir = path.join(process.cwd(), 'uploads', 'floor-plans');
+  if (!fs.existsSync(dir)) return;
+  for (const name of fs.readdirSync(dir)) {
+    try {
+      fs.unlinkSync(path.join(dir, name));
+    } catch (error) {
+      console.warn('Could not remove local floor plan file:', name, error.message);
+    }
+  }
 }
 
 class BoothService {
@@ -136,10 +121,28 @@ class BoothService {
 
   formatPlan(row) {
     const json = row?.toJSON ? row.toJSON() : (row || {});
+    const publicId = json.cloudinaryPublicId || json.cloudinary_public_id || null;
     let fileUrl = json.baseImageUrl || json.base_image_url || json.imageUrl || json.image || null;
-    if (!fileUrl || isPrivateCloudinaryUrl(fileUrl)) {
-      fileUrl = latestLocalFloorPlanUrl() || (isPrivateCloudinaryUrl(fileUrl) ? null : fileUrl);
+    const fileType = json.fileType || json.file_type || classifyFile({
+      originalname: json.originalFileName || json.original_file_name || fileUrl || ''
+    });
+
+    if (publicId) {
+      if (fileType === 'pdf' || /\/raw\//.test(String(fileUrl || ''))) {
+        fileUrl = fileType === 'document'
+          ? cloudinaryService.signedRawUrl(publicId)
+          : cloudinaryService.pagePreviewUrl(publicId, 1);
+      } else if (fileType === 'document') {
+        fileUrl = cloudinaryService.signedRawUrl(publicId);
+      } else if (!fileUrl || /localhost|\/uploads\/floor-plans\//.test(String(fileUrl))) {
+        fileUrl = cloudinaryService.imageUrl(publicId);
+      }
     }
+
+    if (fileUrl && /\/uploads\/floor-plans\//.test(fileUrl)) {
+      fileUrl = null;
+    }
+
     let booths = json.booths || [];
     if (typeof booths === 'string') {
       try {
@@ -154,9 +157,13 @@ class BoothService {
         id: json.id,
         name: json.name,
         baseImageUrl: fileUrl,
-        fileType: fileUrl
-          ? (json.fileType || json.file_type || classifyFile({ originalname: json.originalFileName || json.original_file_name || fileUrl || '' }))
-          : null,
+        downloadUrl: publicId
+          ? cloudinaryService.downloadUrl(publicId, {
+              fileType,
+              fileName: json.originalFileName || json.original_file_name
+            })
+          : fileUrl,
+        fileType: fileUrl ? fileType : null,
         originalFileName: json.originalFileName || json.original_file_name || null,
         imageWidth: json.imageWidth || json.image_width || null,
         imageHeight: json.imageHeight || json.image_height || null,
@@ -279,38 +286,21 @@ async uploadFloorPlanImage(imageFile, userId) {
     await this.ensureTable();
 
     const fileType = classifyFile(imageFile);
-    const ext = path.extname(filename) || (fileType === 'pdf' ? '.pdf' : fileType === 'image' ? '.jpg' : '.bin');
-    const storedName = `floor-plan-${Date.now()}${ext}`;
-    const uploadDir = path.join(process.cwd(), 'uploads', 'floor-plans');
-    fs.mkdirSync(uploadDir, { recursive: true });
-    fs.writeFileSync(path.join(uploadDir, storedName), buffer);
+    const uploadResult = await cloudinaryService.uploadFloorPlan(buffer, {
+      fileType,
+      filename
+    });
 
-    const localUrl = publicFileUrl(`/uploads/floor-plans/${storedName}`);
-    let fileUrl = localUrl;
-    let cloudinaryPublicId = null;
-    let imageWidth = null;
-    let imageHeight = null;
-
-    // Images can be public on Cloudinary. Raw PDFs/docs from this cloud return 401,
-    // so keep the local /uploads URL for public /layout display.
-    if (fileType === 'image') {
-      try {
-        const uploadResult = await cloudinaryService.uploadFile(buffer, {
-          folder: 'exhibition-floor-plans',
-          resource_type: 'image',
-          public_id: `floor-plan-${Date.now()}`
-        });
-        if (uploadResult?.url) {
-          fileUrl = uploadResult.url;
-          cloudinaryPublicId = uploadResult.publicId;
-          imageWidth = uploadResult.width || null;
-          imageHeight = uploadResult.height || null;
-        }
-      } catch (cloudError) {
-        console.warn('Cloudinary upload skipped, using local file:', cloudError.message);
-        fileUrl = localUrl;
-      }
+    if (!uploadResult?.url) {
+      throw new Error('Cloudinary upload did not return a file URL');
     }
+
+    clearLocalFloorPlans();
+
+    const fileUrl = uploadResult.url;
+    const cloudinaryPublicId = uploadResult.publicId;
+    const imageWidth = uploadResult.width || null;
+    const imageHeight = uploadResult.height || null;
 
     const payload = {
       name: 'Main Exhibition Floor',
@@ -669,12 +659,16 @@ async uploadFloorPlanImage(imageFile, userId) {
       if (floorPlan) {
         // Delete image from Cloudinary
         if (floorPlan.cloudinaryPublicId) {
-          try {
-            await cloudinaryService.deleteFile(floorPlan.cloudinaryPublicId);
-          } catch (error) {
-            console.warn('Failed to delete image:', error.message);
+          for (const resourceType of ['image', 'raw']) {
+            try {
+              await cloudinaryService.deleteFile(floorPlan.cloudinaryPublicId, resourceType);
+              break;
+            } catch (error) {
+              console.warn('Failed to delete Cloudinary file:', error.message);
+            }
           }
         }
+        clearLocalFloorPlans();
 
         floorPlan.baseImageUrl = null;
         floorPlan.fileType = null;
