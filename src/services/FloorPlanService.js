@@ -1,6 +1,47 @@
 // services/BoothService.js
 const { Op } = require('sequelize');
+const fs = require('fs');
+const path = require('path');
 const cloudinaryService = require('./CloudinaryService');
+
+function classifyFile(file = {}) {
+  const mime = String(file.mimetype || '').toLowerCase();
+  const name = String(file.originalname || file.filename || '').toLowerCase();
+  if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|avif)$/.test(name)) {
+    return 'image';
+  }
+  if (mime === 'application/pdf' || name.endsWith('.pdf')) {
+    return 'pdf';
+  }
+  return 'document';
+}
+
+function publicFileUrl(relativePath) {
+  const base = (process.env.BACKEND_URL || process.env.PUBLIC_SITE_URL || 'http://localhost:5000').replace(/\/$/, '');
+  return `${base}${relativePath}`;
+}
+
+function floorPlanUploadDir() {
+  return path.join(process.cwd(), 'uploads', 'floor-plans');
+}
+
+function latestLocalFloorPlanUrl() {
+  const dir = floorPlanUploadDir();
+  if (!fs.existsSync(dir)) return null;
+  const files = fs.readdirSync(dir)
+    .filter((name) => !name.startsWith('.'))
+    .map((name) => ({
+      name,
+      time: fs.statSync(path.join(dir, name)).mtimeMs
+    }))
+    .sort((a, b) => b.time - a.time);
+  if (!files[0]) return null;
+  return publicFileUrl(`/uploads/floor-plans/${files[0].name}`);
+}
+
+function isPrivateCloudinaryUrl(url) {
+  return /res\.cloudinary\.com\/.+\/raw\//i.test(String(url || ''));
+}
 
 class BoothService {
   constructor() {
@@ -15,9 +56,187 @@ class BoothService {
     return this._floorPlanModel;
   }
 
+  get sequelize() {
+    return require('../config/database').getConnection('mysql');
+  }
+
+  async ensureTable() {
+    const sequelize = this.sequelize;
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS floor_plans (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL DEFAULT 'Exhibition Floor Plan',
+        base_image_url TEXT,
+        file_type VARCHAR(50),
+        original_file_name VARCHAR(255),
+        cloudinary_public_id VARCHAR(255),
+        booths TEXT DEFAULT '[]',
+        image_width INTEGER,
+        image_height INTEGER,
+        reference_points TEXT,
+        is_active BOOLEAN DEFAULT TRUE,
+        is_master BOOLEAN DEFAULT FALSE,
+        created_by VARCHAR(255),
+        updated_by VARCHAR(255),
+        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    const extraColumns = [
+      'ALTER TABLE floor_plans ADD COLUMN IF NOT EXISTS base_image_url TEXT',
+      'ALTER TABLE floor_plans ADD COLUMN IF NOT EXISTS file_type VARCHAR(50)',
+      'ALTER TABLE floor_plans ADD COLUMN IF NOT EXISTS original_file_name VARCHAR(255)',
+      'ALTER TABLE floor_plans ADD COLUMN IF NOT EXISTS cloudinary_public_id VARCHAR(255)',
+      'ALTER TABLE floor_plans ADD COLUMN IF NOT EXISTS booths TEXT',
+      'ALTER TABLE floor_plans ADD COLUMN IF NOT EXISTS image_width INTEGER',
+      'ALTER TABLE floor_plans ADD COLUMN IF NOT EXISTS image_height INTEGER',
+      'ALTER TABLE floor_plans ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE'
+    ];
+    for (const sql of extraColumns) {
+      try {
+        await sequelize.query(sql);
+      } catch (error) {
+        console.warn('floor_plans alter skipped:', error.message);
+      }
+    }
+
+    try {
+      await sequelize.query('CREATE SEQUENCE IF NOT EXISTS floor_plans_id_seq');
+      await sequelize.query("ALTER TABLE floor_plans ALTER COLUMN id SET DEFAULT nextval('floor_plans_id_seq')");
+      await sequelize.query(`
+        DO $$
+        DECLARE
+          max_id integer;
+        BEGIN
+          SELECT MAX(id) INTO max_id FROM floor_plans;
+          IF max_id IS NULL THEN
+            PERFORM setval('floor_plans_id_seq', 1, false);
+          ELSE
+            PERFORM setval('floor_plans_id_seq', max_id, true);
+          END IF;
+        END $$;
+      `);
+    } catch (error) {
+      console.warn('floor_plans id sequence skipped:', error.message);
+    }
+
+    const typeFixes = [
+      'ALTER TABLE floor_plans ALTER COLUMN created_by TYPE VARCHAR(255) USING created_by::text',
+      'ALTER TABLE floor_plans ALTER COLUMN updated_by TYPE VARCHAR(255) USING updated_by::text'
+    ];
+    for (const sql of typeFixes) {
+      try {
+        await sequelize.query(sql);
+      } catch (error) {
+        console.warn('floor_plans type alter skipped:', error.message);
+      }
+    }
+  }
+
+  formatPlan(row) {
+    const json = row?.toJSON ? row.toJSON() : (row || {});
+    let fileUrl = json.baseImageUrl || json.base_image_url || json.imageUrl || json.image || null;
+    if (!fileUrl || isPrivateCloudinaryUrl(fileUrl)) {
+      fileUrl = latestLocalFloorPlanUrl() || (isPrivateCloudinaryUrl(fileUrl) ? null : fileUrl);
+    }
+    let booths = json.booths || [];
+    if (typeof booths === 'string') {
+      try {
+        booths = JSON.parse(booths);
+      } catch {
+        booths = [];
+      }
+    }
+    return {
+      success: true,
+      data: {
+        id: json.id,
+        name: json.name,
+        baseImageUrl: fileUrl,
+        fileType: fileUrl
+          ? (json.fileType || json.file_type || classifyFile({ originalname: json.originalFileName || json.original_file_name || fileUrl || '' }))
+          : null,
+        originalFileName: json.originalFileName || json.original_file_name || null,
+        imageWidth: json.imageWidth || json.image_width || null,
+        imageHeight: json.imageHeight || json.image_height || null,
+        booths: Array.isArray(booths) ? booths : []
+      }
+    };
+  }
+
+  async persistPlanRecord(payload, userId) {
+    try {
+      let floorPlan = await this.FloorPlan.findOne({
+        where: { isActive: true },
+        order: [['createdAt', 'DESC']]
+      });
+
+      if (!floorPlan) {
+        floorPlan = await this.FloorPlan.create({
+          ...payload,
+          booths: [],
+          createdBy: userId || null,
+          isActive: true
+        });
+      } else {
+        await floorPlan.update(payload);
+      }
+      return floorPlan;
+    } catch (modelError) {
+      console.warn('Floor plan model persist failed, using SQL:', modelError.message);
+      const sequelize = this.sequelize;
+      const [existing] = await sequelize.query(
+        'SELECT id FROM floor_plans ORDER BY id DESC LIMIT 1'
+      );
+
+      const replacements = {
+        name: payload.name || 'Main Exhibition Floor',
+        url: payload.baseImageUrl,
+        fileType: payload.fileType || null,
+        fileName: payload.originalFileName || null,
+        publicId: payload.cloudinaryPublicId || null,
+        imageWidth: payload.imageWidth || null,
+        imageHeight: payload.imageHeight || null,
+        userId: userId || null
+      };
+
+      if (existing[0]?.id) {
+        await sequelize.query(
+          `UPDATE floor_plans SET
+            name = :name,
+            base_image_url = :url,
+            file_type = :fileType,
+            original_file_name = :fileName,
+            cloudinary_public_id = :publicId,
+            image_width = :imageWidth,
+            image_height = :imageHeight,
+            is_active = TRUE,
+            updated_by = :userId,
+            updated_at = NOW()
+           WHERE id = :id`,
+          { replacements: { ...replacements, id: existing[0].id } }
+        );
+        return { id: existing[0].id, ...payload };
+      }
+
+      const [inserted] = await sequelize.query(
+        `INSERT INTO floor_plans (
+            name, base_image_url, file_type, original_file_name, cloudinary_public_id,
+            booths, image_width, image_height, is_active, created_by, updated_by, created_at, updated_at
+          ) VALUES (
+            :name, :url, :fileType, :fileName, :publicId,
+            '[]', :imageWidth, :imageHeight, TRUE, :userId, :userId, NOW(), NOW()
+          ) RETURNING id`,
+        { replacements }
+      );
+      return { id: inserted[0]?.id, ...payload };
+    }
+  }
+
 async uploadFloorPlanImage(imageFile, userId) {
   try {
-    console.log('📤 Uploading floor plan image to Cloudinary...');
+    console.log('📤 Uploading floor plan file...');
     
     // Debug the incoming file
     console.log('Image file details:', {
@@ -31,7 +250,7 @@ async uploadFloorPlanImage(imageFile, userId) {
 
     // Handle different possible input formats
     let buffer;
-    let filename = 'floor-plan.jpg';
+    let filename = imageFile?.originalname || 'floor-plan.bin';
 
     if (Buffer.isBuffer(imageFile)) {
       // If it's already a buffer
@@ -57,63 +276,68 @@ async uploadFloorPlanImage(imageFile, userId) {
 
     console.log(`✅ Buffer prepared: ${buffer.length} bytes for file ${filename}`);
 
-    // Upload to Cloudinary
-    const uploadResult = await cloudinaryService.uploadFile(buffer, {
-      folder: 'exhibition-floor-plans',
-      resource_type: 'auto', // Change to 'auto' to handle all types
-      filename: filename,
-      public_id: `floor-plan-${Date.now()}`
-    });
+    await this.ensureTable();
 
-    console.log('✅ Cloudinary upload successful:', uploadResult.url);
+    const fileType = classifyFile(imageFile);
+    const ext = path.extname(filename) || (fileType === 'pdf' ? '.pdf' : fileType === 'image' ? '.jpg' : '.bin');
+    const storedName = `floor-plan-${Date.now()}${ext}`;
+    const uploadDir = path.join(process.cwd(), 'uploads', 'floor-plans');
+    fs.mkdirSync(uploadDir, { recursive: true });
+    fs.writeFileSync(path.join(uploadDir, storedName), buffer);
 
-    // Create or update floor plan with image
-    let floorPlan = await this.FloorPlan.findOne({
-      where: { isActive: true }
-    });
+    const localUrl = publicFileUrl(`/uploads/floor-plans/${storedName}`);
+    let fileUrl = localUrl;
+    let cloudinaryPublicId = null;
+    let imageWidth = null;
+    let imageHeight = null;
 
-    if (!floorPlan) {
-      floorPlan = await this.FloorPlan.create({
-        name: 'Main Exhibition Floor',
-        baseImageUrl: uploadResult.url,
-        cloudinaryPublicId: uploadResult.publicId,
-        imageWidth: uploadResult.width || 1200,
-        imageHeight: uploadResult.height || 800,
-        booths: [],
-        referencePoints: [],
-        isActive: true,
-        createdBy: userId ? Number(userId) : null // Ensure it's a number
-      });
-    } else {
-      // Delete old image from Cloudinary if exists
-      if (floorPlan.cloudinaryPublicId) {
-        try {
-          await cloudinaryService.deleteFile(floorPlan.cloudinaryPublicId);
-          console.log('✅ Old image deleted from Cloudinary');
-        } catch (error) {
-          console.warn('Failed to delete old image:', error.message);
+    // Images can be public on Cloudinary. Raw PDFs/docs from this cloud return 401,
+    // so keep the local /uploads URL for public /layout display.
+    if (fileType === 'image') {
+      try {
+        const uploadResult = await cloudinaryService.uploadFile(buffer, {
+          folder: 'exhibition-floor-plans',
+          resource_type: 'image',
+          public_id: `floor-plan-${Date.now()}`
+        });
+        if (uploadResult?.url) {
+          fileUrl = uploadResult.url;
+          cloudinaryPublicId = uploadResult.publicId;
+          imageWidth = uploadResult.width || null;
+          imageHeight = uploadResult.height || null;
         }
+      } catch (cloudError) {
+        console.warn('Cloudinary upload skipped, using local file:', cloudError.message);
+        fileUrl = localUrl;
       }
-
-      // Update with new image - ensure all numeric fields are numbers
-      floorPlan.baseImageUrl = uploadResult.url;
-      floorPlan.cloudinaryPublicId = uploadResult.publicId;
-      floorPlan.imageWidth = uploadResult.width ? Number(uploadResult.width) : floorPlan.imageWidth;
-      floorPlan.imageHeight = uploadResult.height ? Number(uploadResult.height) : floorPlan.imageHeight;
-      floorPlan.updatedBy = userId ? Number(userId) : null; // Ensure it's a number or null
-      await floorPlan.save();
     }
+
+    const payload = {
+      name: 'Main Exhibition Floor',
+      baseImageUrl: fileUrl,
+      fileType,
+      originalFileName: filename,
+      cloudinaryPublicId,
+      imageWidth,
+      imageHeight,
+      isActive: true,
+      updatedBy: userId || null
+    };
+
+    const floorPlan = await this.persistPlanRecord(payload, userId);
 
     return {
       success: true,
       data: {
         id: floorPlan.id,
-        baseImageUrl: floorPlan.baseImageUrl,
-        imageWidth: floorPlan.imageWidth,
-        imageHeight: floorPlan.imageHeight,
+        baseImageUrl: floorPlan.baseImageUrl || fileUrl,
+        fileType: floorPlan.fileType || fileType,
+        originalFileName: floorPlan.originalFileName || filename,
+        imageWidth: floorPlan.imageWidth || imageWidth,
+        imageHeight: floorPlan.imageHeight || imageHeight,
         booths: floorPlan.booths || []
       },
-      message: 'Floor plan image uploaded successfully'
+      message: 'Floor plan uploaded successfully'
     };
   } catch (error) {
     console.error('❌ Upload floor plan error:', error);
@@ -265,39 +489,71 @@ async uploadFloorPlanImage(imageFile, userId) {
   // Get floor plan with image and booths
   async getFloorPlan() {
     try {
-      const model = this.FloorPlan;
-      if (!model) throw new Error('FloorPlan model not available');
+      await this.ensureTable();
 
-      const floorPlan = await model.findOne({
-        where: { isActive: true },
-        order: [['createdAt', 'DESC']]
-      });
+      try {
+        const floorPlan = await this.FloorPlan.findOne({
+          where: { isActive: true },
+          order: [['createdAt', 'DESC']]
+        });
+        if (floorPlan) {
+          return this.formatPlan(floorPlan);
+        }
+      } catch (modelError) {
+        console.warn('Floor plan model query failed:', modelError.message);
+      }
 
-      if (!floorPlan) {
-        return {
-          success: true,
-          data: {
-            baseImageUrl: null,
-            imageWidth: null,
-            imageHeight: null,
-            booths: []
-          }
-        };
+      try {
+        const [rows] = await this.sequelize.query(`
+          SELECT * FROM floor_plans
+          ORDER BY COALESCE(updated_at, created_at) DESC NULLS LAST, id DESC
+          LIMIT 1
+        `);
+        if (rows[0] && (rows[0].base_image_url || rows[0].baseImageUrl || rows[0].image)) {
+          return this.formatPlan(rows[0]);
+        }
+      } catch (rawError) {
+        console.warn('Floor plan raw query failed:', rawError.message);
       }
 
       return {
         success: true,
         data: {
-          id: floorPlan.id,
-          name: floorPlan.name,
-          baseImageUrl: floorPlan.baseImageUrl,
-          imageWidth: floorPlan.imageWidth,
-          imageHeight: floorPlan.imageHeight,
-          booths: floorPlan.booths || []
+          baseImageUrl: null,
+          fileType: null,
+          originalFileName: null,
+          imageWidth: null,
+          imageHeight: null,
+          booths: []
         }
       };
     } catch (error) {
       console.error('❌ Get floor plan error:', error);
+      throw error;
+    }
+  }
+
+  async saveFloorPlan(booths, userId) {
+    try {
+      await this.ensureTable();
+      const floorPlan = await this.FloorPlan.findOne({
+        where: { isActive: true },
+        order: [['createdAt', 'DESC']]
+      });
+
+      if (!floorPlan) {
+        throw new Error('No active floor plan found');
+      }
+
+      if (Array.isArray(booths)) {
+        floorPlan.booths = booths;
+        floorPlan.updatedBy = userId || null;
+        await floorPlan.save();
+      }
+
+      return this.getFloorPlan();
+    } catch (error) {
+      console.error('❌ Save floor plan error:', error);
       throw error;
     }
   }
@@ -421,12 +677,14 @@ async uploadFloorPlanImage(imageFile, userId) {
         }
 
         floorPlan.baseImageUrl = null;
+        floorPlan.fileType = null;
+        floorPlan.originalFileName = null;
         floorPlan.cloudinaryPublicId = null;
         floorPlan.imageWidth = null;
         floorPlan.imageHeight = null;
         floorPlan.booths = [];
         floorPlan.referencePoints = [];
-        floorPlan.updatedBy = userId;
+        floorPlan.updatedBy = userId || null;
         await floorPlan.save();
       }
 

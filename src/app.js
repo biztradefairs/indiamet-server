@@ -218,12 +218,12 @@ const uploadDirs = [
       etag: true,
       lastModified: true,
       setHeaders: (res, filePath) => {
-        // Set proper content type for PDFs
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+        res.setHeader('Access-Control-Allow-Origin', '*');
         if (filePath.endsWith('.pdf')) {
           res.setHeader('Content-Type', 'application/pdf');
           res.setHeader('Content-Disposition', 'inline');
         }
-        // Cache control
         res.setHeader('Cache-Control', this.env === 'production' 
           ? 'public, max-age=86400' 
           : 'no-cache, no-store, must-revalidate');
@@ -287,7 +287,9 @@ const uploadDirs = [
     // Security headers
     this.app.use(helmet({
       contentSecurityPolicy: false,
-      crossOriginEmbedderPolicy: false
+      crossOriginEmbedderPolicy: false,
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+      frameguard: false
     }));
 
     const corsOptions = {
